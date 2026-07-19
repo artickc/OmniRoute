@@ -50,3 +50,28 @@ test("a production serve is never a test run", () => {
     false
   );
 });
+
+// Guard the (env, argv) swap that crashed instrumentation with "e.some is not a function"
+// after the shared helper took (argv, env) while initCloudSync still called (env, argv).
+test("swapped (env, argv) call does not throw and still reads NODE_ENV=test", () => {
+  const env = { NODE_ENV: "test" } as NodeJS.ProcessEnv;
+  const argv = ["node", "server.js"];
+  assert.doesNotThrow(() => isAutomatedTestProcess(env as unknown as readonly string[], argv as unknown as NodeJS.ProcessEnv));
+  assert.equal(
+    isAutomatedTestProcess(env as unknown as readonly string[], argv as unknown as NodeJS.ProcessEnv),
+    true
+  );
+});
+
+test("swapped (env, argv) with production env is not a test run", () => {
+  const env = { NODE_ENV: "production" } as NodeJS.ProcessEnv;
+  const argv = ["node", "server.js"];
+  assert.equal(
+    isAutomatedTestProcess(env as unknown as readonly string[], argv as unknown as NodeJS.ProcessEnv),
+    false
+  );
+});
+
+test("non-array first arg that is not env-like is not a test run (no throw)", () => {
+  assert.equal(isAutomatedTestProcess({} as unknown as readonly string[], NO_ENV), false);
+});

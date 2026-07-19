@@ -20,7 +20,19 @@ export function shouldSkipCloudSyncInitialization(
     return true;
   }
 
-  return isAutomatedTestProcess(argv, env) && env.OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS !== "1";
+  // Helper signature is (argv, env) — NOT (env, argv). A swapped call made
+  // argv.some throw "e.some is not a function" and took down every request
+  // via the instrumentation hook (HTTP 500 on /api/monitoring/health).
+  // Prefer the helper's default argv (includes process.execArgv) when the
+  // caller did not inject a custom argv list.
+  const effectiveArgv =
+    argv === process.argv && typeof process !== "undefined"
+      ? [...process.argv, ...(process.execArgv ?? [])]
+      : argv;
+  return (
+    isAutomatedTestProcess(effectiveArgv, env) &&
+    env.OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS !== "1"
+  );
 }
 
 export async function ensureCloudSyncInitialized() {
