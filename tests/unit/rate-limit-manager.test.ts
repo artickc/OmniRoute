@@ -285,6 +285,51 @@ test("rate limit manager recomputes auto-enabled API key connections when queue 
   assert.ok(rateLimitManager.getAllRateLimitStatus()[`openai:${autoConnection.id}`]);
 });
 
+test("web-cookie providers are NOT auto rate-limited (notion-web is slow; 15s queue drops jobs)", async () => {
+  // notion-web stores the session cookie as authType=apikey, so without this
+  // guard the API-key auto-enable safety net would queue it behind Bottleneck
+  // and drop concurrent chats after maxWaitMs=15s with RATE_LIMIT_QUEUE_TIMEOUT.
+  const notion = await providersDb.createProviderConnection({
+    provider: "notion-web",
+    authType: "apikey",
+    name: "Notion Web Session",
+    apiKey: "token_v2=fake",
+    isActive: true,
+  });
+  const openai = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Real OpenAI Key",
+    apiKey: "sk-real",
+    isActive: true,
+  });
+  const notionExplicit = await providersDb.createProviderConnection({
+    provider: "notion-web",
+    authType: "apikey",
+    name: "Notion Explicit",
+    apiKey: "token_v2=fake2",
+    isActive: true,
+    rateLimitProtection: true,
+  });
+
+  await rateLimitManager.applyRequestQueueSettings({
+    ...resilienceSettings.DEFAULT_RESILIENCE_SETTINGS.requestQueue,
+    autoEnableApiKeyProviders: true,
+  });
+
+  assert.equal(
+    rateLimitManager.isRateLimitEnabled(notion.id),
+    false,
+    "notion-web must not be auto-enabled"
+  );
+  assert.equal(rateLimitManager.isRateLimitEnabled(openai.id), true, "real API keys still auto-enable");
+  assert.equal(
+    rateLimitManager.isRateLimitEnabled(notionExplicit.id),
+    true,
+    "explicit rateLimitProtection still honored for web-cookie providers"
+  );
+});
+
 test("withRateLimit rejects cleanly when the caller aborts with the default DOMException reason", async () => {
   // `AbortController.abort()` called with no argument (e.g. modelTestRunner's
   // timeout path) produces a native DOMException as `signal.reason`, whose

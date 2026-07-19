@@ -26,6 +26,25 @@ import {
   toPlainHeaders,
 } from "./rateLimitManager/headers";
 import { checkQueueAdmission } from "./rateLimitManager/admission";
+import { WEB_COOKIE_PROVIDERS } from "../../src/shared/constants/providers/web-cookie.ts";
+
+/** Web/cookie reverse-engineered providers (notion-web, perplexity-web, …).
+ * They are registered as authType=apikey (cookie in the apiKey field) so the
+ * API-key auto rate-limit safety net would otherwise wrap them. That is a
+ * poor fit: each call can take 5–30s, there are no useful upstream rate-limit
+ * headers, and the default maxWaitMs (15s) drops queued jobs with a 502 that
+ * looks like a provider outage. Explicit rateLimitProtection=true still works. */
+function isWebCookieProvider(provider: string): boolean {
+  if (!provider) return false;
+  const id = provider.trim().toLowerCase();
+  const catalog = WEB_COOKIE_PROVIDERS as Record<string, { id?: string; alias?: string }>;
+  if (catalog[id]) return true;
+  for (const entry of Object.values(catalog)) {
+    if (!entry) continue;
+    if (entry.id === id || entry.alias === id) return true;
+  }
+  return false;
+}
 
 interface LearnedLimitEntry {
   provider: string;
@@ -196,6 +215,7 @@ function reconcileEnabledConnections(
     if (
       isAutoEnableActive(requestQueueSettings) &&
       getProviderCategory(provider) === "apikey" &&
+      !isWebCookieProvider(provider) &&
       isActive
     ) {
       nextEnabledConnections.add(connectionId);
