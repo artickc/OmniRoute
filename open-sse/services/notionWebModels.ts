@@ -20,41 +20,56 @@ const NOTION_USER_AGENT =
 const NOTION_CLIENT_VERSION = "23.13.20260719.0708";
 
 export type NotionDiscoveredModel = {
+  /**
+   * Catalog / OpenAI-compatible model id shown to clients.
+   * Prefer the web picker label slug (e.g. `fable-5`, `gpt-5.6-sol`) so users
+   * never have to choose Notion's internal food codenames.
+   */
   id: string;
+  /** Human label from Notion's AI picker (`modelMessage`), e.g. "Fable 5". */
   name: string;
   owned_by: string;
   supportsReasoning?: boolean;
   disabled?: boolean;
+  /**
+   * Internal Notion `model` codename for `runInferenceTranscript`
+   * (e.g. `acai-budino-high`). When omitted, `id` is the codename itself
+   * (rare; only when no display label was available).
+   */
+  notionCodename?: string;
 };
 
-/** Offline fallback when getAvailableModels is unreachable (seeded from live picker). */
+/**
+ * Offline fallback when getAvailableModels is unreachable (seeded from live picker).
+ * Catalog ids use real web-picker labels; `notionCodename` is what the API accepts.
+ */
 export const NOTION_WEB_FALLBACK_MODELS: NotionDiscoveredModel[] = [
   { id: "notion-ai", name: "Notion AI (default)", owned_by: "notion" },
-  { id: "orange-mousse", name: "GPT-5.6 Sol", owned_by: "openai" },
-  { id: "orchid-muffin", name: "GPT-5.6 Terra", owned_by: "openai" },
-  { id: "olive-jellyroll", name: "GPT-5.6 Luna", owned_by: "openai" },
-  { id: "oatmeal-cookie", name: "GPT-5.2", owned_by: "openai" },
-  { id: "oval-kumquat-medium", name: "GPT-5.4", owned_by: "openai" },
-  { id: "opal-quince-medium", name: "GPT-5.5", owned_by: "openai" },
-  { id: "oregon-grape-medium", name: "GPT-5.4 Mini", owned_by: "openai" },
-  { id: "otaheite-apple-medium", name: "GPT-5.4 Nano", owned_by: "openai" },
-  { id: "vertex-gemini-3.5-flash", name: "Gemini 3.5 Flash", owned_by: "gemini" },
-  { id: "gingerbread", name: "Gemini 3 Flash", owned_by: "gemini" },
-  { id: "galette-medium-thinking", name: "Gemini 3.1 Pro", owned_by: "gemini" },
-  { id: "almond-croissant-low", name: "Sonnet 4.6", owned_by: "anthropic" },
-  { id: "angel-cake-high", name: "Sonnet 5", owned_by: "anthropic" },
-  { id: "avocado-froyo-medium", name: "Opus 4.6", owned_by: "anthropic" },
-  { id: "apricot-sorbet-high", name: "Opus 4.7", owned_by: "anthropic" },
-  { id: "ambrosia-tart-high", name: "Opus 4.8", owned_by: "anthropic" },
-  { id: "anthropic-haiku-4.5", name: "Haiku 4.5", owned_by: "anthropic" },
-  { id: "acai-budino-high", name: "Fable 5", owned_by: "anthropic" },
-  { id: "fireworks-kimi-k2.6", name: "Kimi K2.6", owned_by: "mystery" },
-  { id: "fireworks-kimi-k2.7", name: "Kimi K2.7 Code", owned_by: "mystery" },
-  { id: "baseten-deepseek-v4-pro", name: "DeepSeek V4 Pro", owned_by: "mystery" },
-  { id: "baseten-glm-5.2", name: "GLM 5.2", owned_by: "mystery" },
-  { id: "xigua-mochi-medium", name: "Grok 4.3", owned_by: "xai" },
-  { id: "strawberry-whoopiepie", name: "Grok 4.5", owned_by: "xai" },
-  { id: "xinomavro-cake", name: "Grok Build 0.1", owned_by: "xai" },
+  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", owned_by: "openai", notionCodename: "orange-mousse" },
+  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", owned_by: "openai", notionCodename: "orchid-muffin" },
+  { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", owned_by: "openai", notionCodename: "olive-jellyroll" },
+  { id: "gpt-5.2", name: "GPT-5.2", owned_by: "openai", notionCodename: "oatmeal-cookie" },
+  { id: "gpt-5.4", name: "GPT-5.4", owned_by: "openai", notionCodename: "oval-kumquat-medium" },
+  { id: "gpt-5.5", name: "GPT-5.5", owned_by: "openai", notionCodename: "opal-quince-medium" },
+  { id: "gpt-5.4-mini", name: "GPT-5.4 Mini", owned_by: "openai", notionCodename: "oregon-grape-medium" },
+  { id: "gpt-5.4-nano", name: "GPT-5.4 Nano", owned_by: "openai", notionCodename: "otaheite-apple-medium" },
+  { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", owned_by: "gemini", notionCodename: "vertex-gemini-3.5-flash" },
+  { id: "gemini-3-flash", name: "Gemini 3 Flash", owned_by: "gemini", notionCodename: "gingerbread" },
+  { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", owned_by: "gemini", notionCodename: "galette-medium-thinking" },
+  { id: "sonnet-4.6", name: "Sonnet 4.6", owned_by: "anthropic", notionCodename: "almond-croissant-low" },
+  { id: "sonnet-5", name: "Sonnet 5", owned_by: "anthropic", notionCodename: "angel-cake-high" },
+  { id: "opus-4.6", name: "Opus 4.6", owned_by: "anthropic", notionCodename: "avocado-froyo-medium" },
+  { id: "opus-4.7", name: "Opus 4.7", owned_by: "anthropic", notionCodename: "apricot-sorbet-high" },
+  { id: "opus-4.8", name: "Opus 4.8", owned_by: "anthropic", notionCodename: "ambrosia-tart-high" },
+  { id: "haiku-4.5", name: "Haiku 4.5", owned_by: "anthropic", notionCodename: "anthropic-haiku-4.5" },
+  { id: "fable-5", name: "Fable 5", owned_by: "anthropic", notionCodename: "acai-budino-high" },
+  { id: "kimi-k2.6", name: "Kimi K2.6", owned_by: "mystery", notionCodename: "fireworks-kimi-k2.6" },
+  { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", owned_by: "mystery", notionCodename: "fireworks-kimi-k2.7" },
+  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", owned_by: "mystery", notionCodename: "baseten-deepseek-v4-pro" },
+  { id: "glm-5.2", name: "GLM 5.2", owned_by: "mystery", notionCodename: "baseten-glm-5.2" },
+  { id: "grok-4.3", name: "Grok 4.3", owned_by: "xai", notionCodename: "xigua-mochi-medium" },
+  { id: "grok-4.5", name: "Grok 4.5", owned_by: "xai", notionCodename: "strawberry-whoopiepie" },
+  { id: "grok-build-0.1", name: "Grok Build 0.1", owned_by: "xai", notionCodename: "xinomavro-cake" },
 ];
 
 /** Normalize a pasted credential to a Cookie header string. */
@@ -125,11 +140,24 @@ export function slugifyNotionDisplayName(name: string): string {
 }
 
 /**
+ * Resolve the catalog id for a Notion model: prefer the web-picker label slug
+ * (`fable-5`) over the internal food codename (`acai-budino-high`).
+ */
+export function catalogIdForNotionModel(codename: string, displayName: string): string {
+  const slug = slugifyNotionDisplayName(displayName);
+  if (slug && slug !== "notion-ai") return slug;
+  return codename;
+}
+
+/**
  * Parse one getAvailableModels list entry into a model, or `null` when the entry
- * should be skipped (disabled, malformed, or a duplicate id already in `seen`).
+ * should be skipped (disabled, malformed, or a duplicate already in `seen`).
  *
  * Restricted-access models (e.g. Fable 5 / acai-budino-high) are kept when
  * `isDisabled !== true` — the web picker lists them the same way.
+ *
+ * Catalog `id` is the real picker label slug; `notionCodename` is what
+ * runInferenceTranscript requires.
  */
 function parseNotionModelEntry(
   entry: unknown,
@@ -139,42 +167,37 @@ function parseNotionModelEntry(
   const row = entry as Record<string, unknown>;
   if (row.isDisabled === true) return null;
 
-  const id = typeof row.model === "string" ? row.model.trim() : "";
-  if (!id || seen.has(id)) return null;
+  const codename = typeof row.model === "string" ? row.model.trim() : "";
+  if (!codename) return null;
 
-  seen.add(id);
+  const name = trimmedOrFallback(row.modelMessage, codename);
+  const catalogId = catalogIdForNotionModel(codename, name);
+
+  // Dedupe on both catalog id and codename so a second row with the same
+  // label or the same food codename is not listed twice.
+  if (seen.has(catalogId) || seen.has(codename)) return null;
+  seen.add(catalogId);
+  seen.add(codename);
+
   return {
-    id,
-    name: trimmedOrFallback(row.modelMessage, id),
+    id: catalogId,
+    name,
     owned_by: trimmedOrFallback(row.modelFamily, "notion"),
+    ...(catalogId !== codename ? { notionCodename: codename } : {}),
     ...(rowSupportsReasoning(row) ? { supportsReasoning: true } : {}),
   };
 }
 
 /**
- * After parsing codenames, also expose friendly slug ids (gpt-5.6-sol) that
- * resolve back to the codename at inference time. The web picker shows
- * modelMessage; OpenAI clients typically select by id — dual listing closes
- * the "why different models than the web?" gap.
+ * Identity helper kept for call-site stability. Catalog entries are already
+ * primary-friendly (real labels); food codenames are NOT dual-listed so
+ * `/v1/models` and the UI show "fable-5" / "Fable 5" instead of "acai-budino-high".
+ * Inference still accepts codenames via `resolveNotionCodename`.
  */
 export function withFriendlyNotionAliases(
   models: NotionDiscoveredModel[]
 ): NotionDiscoveredModel[] {
-  const seen = new Set(models.map((m) => m.id));
-  const out = [...models];
-  for (const m of models) {
-    if (m.id === "notion-ai") continue;
-    const slug = slugifyNotionDisplayName(m.name);
-    if (!slug || slug === m.id || seen.has(slug)) continue;
-    seen.add(slug);
-    out.push({
-      id: slug,
-      name: m.name,
-      owned_by: m.owned_by,
-      ...(m.supportsReasoning ? { supportsReasoning: true } : {}),
-    });
-  }
-  return out;
+  return models;
 }
 
 /** Ensure a stable default id always exists for clients that still request notion-ai. */
@@ -188,8 +211,8 @@ function withDefaultNotionModel(
 
 /**
  * Parse getAvailableModels JSON into OpenAI-style model entries.
- * Skips disabled models; prefers display `modelMessage` as name and internal
- * `model` codename as id (what runInferenceTranscript expects).
+ * Skips disabled models. Catalog id = web picker label slug; name = modelMessage;
+ * notionCodename = internal food codename for runInferenceTranscript.
  */
 export function parseNotionAvailableModels(data: unknown): NotionDiscoveredModel[] {
   if (!data || typeof data !== "object" || Array.isArray(data)) return [];
@@ -360,8 +383,14 @@ export async function discoverNotionWebModels(opts: {
   return { models, spaceId, source: "api" };
 }
 
+/** Effective food codename for a catalog model entry. */
+export function notionCodenameOf(model: NotionDiscoveredModel): string {
+  if (!model?.id || model.id === "notion-ai") return "";
+  return (model.notionCodename || model.id).trim();
+}
+
 /**
- * Build a reverse map of friendly labels/slugs → Notion food codenames.
+ * Build a reverse map of friendly labels/slugs/food-codenames → Notion food codenames.
  * Used by the executor so clients can request either id style.
  */
 export function buildNotionFriendlyToCodenameMap(
@@ -370,12 +399,20 @@ export function buildNotionFriendlyToCodenameMap(
   const map = new Map<string, string>();
   for (const m of models) {
     if (!m?.id || m.id === "notion-ai") continue;
-    map.set(m.id, m.id);
-    map.set(m.id.toLowerCase(), m.id);
+    const codename = notionCodenameOf(m);
+    if (!codename) continue;
+
+    // Catalog id (friendly slug) + its lowercase form.
+    map.set(m.id, codename);
+    map.set(m.id.toLowerCase(), codename);
+    // Food codename itself (power users / cached clients).
+    map.set(codename, codename);
+    map.set(codename.toLowerCase(), codename);
+    // Display label + slug (e.g. "Fable 5" / "fable-5").
     if (m.name) {
-      map.set(m.name.toLowerCase(), m.id);
+      map.set(m.name.toLowerCase(), codename);
       const slug = slugifyNotionDisplayName(m.name);
-      if (slug) map.set(slug, m.id);
+      if (slug) map.set(slug, codename);
     }
   }
   return map;
@@ -384,7 +421,7 @@ export function buildNotionFriendlyToCodenameMap(
 /**
  * Normalize a client model id to the codename Notion's transcript API expects.
  * Accepts provider prefixes (notion-web/, nw/), food codenames, display names,
- * and slugified labels (gpt-5.6-sol).
+ * and slugified labels (fable-5, gpt-5.6-sol).
  */
 export function resolveNotionCodename(
   model: string | undefined | null,
@@ -401,6 +438,8 @@ export function resolveNotionCodename(
     ...NOTION_WEB_FALLBACK_MODELS,
     ...extraModels,
   ]);
+  // Unknown ids pass through as-is so a freshly discovered codename still works
+  // before the fallback table is updated.
   return map.get(m) || map.get(m.toLowerCase()) || map.get(slugifyNotionDisplayName(m)) || m;
 }
 

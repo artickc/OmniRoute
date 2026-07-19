@@ -272,10 +272,17 @@ export class NotionWebExecutor extends BaseExecutor {
     }
 
     const spaceId = extractSpaceIdFromCookie(cookie);
-    // Client may send notion-web/orange-mousse, nw/orange-mousse, orange-mousse,
-    // gpt-5.6-sol, or "GPT-5.6 Sol" — Notion only accepts the food codename.
+    // Client may send notion-web/fable-5, nw/fable-5, fable-5, "Fable 5", or the
+    // legacy food codename (acai-budino-high). Notion only accepts the food codename
+    // on the wire; we echo the client-facing id in the OpenAI response.
     const notionCodename = resolveNotionCodename(model);
-    const modelId = notionCodename || "notion-ai";
+    let clientFacingModel = typeof model === "string" ? model.trim() : "";
+    if (clientFacingModel.startsWith("notion-web/")) {
+      clientFacingModel = clientFacingModel.slice("notion-web/".length);
+    } else if (clientFacingModel.startsWith("nw/")) {
+      clientFacingModel = clientFacingModel.slice(3);
+    }
+    const modelId = clientFacingModel || notionCodename || "notion-ai";
     const reqBody: Record<string, unknown> = {
       traceId: randomUUID(),
       transcript: buildNotionTranscript(messages, notionCodename || undefined),

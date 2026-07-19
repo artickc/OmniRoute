@@ -569,7 +569,7 @@ export async function GET(
               ...init,
             }),
         });
-        // parseNotionAvailableModels already adds friendly slug aliases.
+        // parseNotionAvailableModels uses real web-picker labels as catalog ids.
         return buildApiDiscoveryResponse(discovery.models);
       } catch (error) {
         console.log("Error fetching models from notion-web", {

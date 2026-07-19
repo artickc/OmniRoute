@@ -25,8 +25,12 @@ describe("NotionWebExecutor — registry consistency", () => {
     const models = getModelsByProviderId("notion-web");
     assert.ok(models.length >= 1);
     assert.ok(models.some((m) => m.id === "notion-ai"));
-    // Seed catalog includes real Notion codenames (live discovery still preferred).
-    assert.ok(models.some((m) => m.id === "ambrosia-tart-high" || m.id === "orange-mousse"));
+    // Seed catalog uses real web-picker labels (fable-5 / gpt-5.6-sol), not food codenames.
+    assert.ok(models.some((m) => m.id === "fable-5" || m.id === "gpt-5.6-sol" || m.id === "opus-4.8"));
+    assert.equal(
+      models.some((m) => m.id === "ambrosia-tart-high" || m.id === "orange-mousse" || m.id === "acai-budino-high"),
+      false
+    );
   });
 });
 
@@ -124,6 +128,7 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
         return new Response(JSON.stringify({ value: [["ok"]] }), { status: 200 });
       }) as typeof fetch;
 
+      // Legacy food codename still accepted for power users / cached clients.
       await executor.execute({
         model: "orange-mousse",
         body: { messages: [{ role: "user", content: "hi" }] },
@@ -145,6 +150,7 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
     const executor = new mod.NotionWebExecutor();
     let capturedBody: { transcript: Array<{ type: string; value?: { model?: string } }> } | null =
       null;
+    let responseModel = "";
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async (_url: string | URL, opts: RequestInit) => {
@@ -152,7 +158,7 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
         return new Response(JSON.stringify({ value: [["ok"]] }), { status: 200 });
       }) as typeof fetch;
 
-      await executor.execute({
+      const result = await executor.execute({
         model: "notion-web/gpt-5.6-sol",
         body: { messages: [{ role: "user", content: "hi" }] },
         stream: false,
@@ -162,7 +168,40 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
 
       assert.ok(capturedBody);
       assert.equal(capturedBody.transcript[0].type, "config");
+      // Wire protocol still uses the food codename.
       assert.equal(capturedBody.transcript[0].value?.model, "orange-mousse");
+      // Response echoes the client-facing real model name.
+      const json = (await result.response.json()) as { model?: string };
+      responseModel = json.model || "";
+      assert.equal(responseModel, "gpt-5.6-sol");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves fable-5 to acai-budino-high for the transcript config entry", async () => {
+    const executor = new mod.NotionWebExecutor();
+    let capturedBody: { transcript: Array<{ type: string; value?: { model?: string } }> } | null =
+      null;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL, opts: RequestInit) => {
+        capturedBody = JSON.parse(String(opts.body));
+        return new Response(JSON.stringify({ value: [["ok"]] }), { status: 200 });
+      }) as typeof fetch;
+
+      const result = await executor.execute({
+        model: "fable-5",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: "token_v2=xyz; space_id=space-1" },
+        signal: null,
+      } as never);
+
+      assert.ok(capturedBody);
+      assert.equal(capturedBody.transcript[0].value?.model, "acai-budino-high");
+      const json = (await result.response.json()) as { model?: string };
+      assert.equal(json.model, "fable-5");
     } finally {
       globalThis.fetch = originalFetch;
     }
