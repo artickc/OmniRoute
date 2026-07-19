@@ -92,7 +92,7 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
         signal: null,
       } as never);
 
-      assert.equal(capturedUrl, "https://www.notion.so/api/v3/runInferenceTranscript");
+      assert.equal(capturedUrl, "https://app.notion.com/api/v3/runInferenceTranscript");
       assert.equal(capturedHeaders.Cookie, "token_v2=abc123");
       assert.ok(capturedBody);
       // notion-ai default does not inject a config entry (server-side default model).
@@ -136,6 +136,33 @@ describe("NotionWebExecutor — upstream translation (mocked fetch)", () => {
       assert.equal(capturedBody.transcript[0].type, "config");
       assert.equal(capturedBody.transcript[0].value?.model, "orange-mousse");
       assert.equal(capturedBody.transcript[1].type, "human");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves friendly slug / provider-prefixed model ids to the Notion food codename", async () => {
+    const executor = new mod.NotionWebExecutor();
+    let capturedBody: { transcript: Array<{ type: string; value?: { model?: string } }> } | null =
+      null;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL, opts: RequestInit) => {
+        capturedBody = JSON.parse(String(opts.body));
+        return new Response(JSON.stringify({ value: [["ok"]] }), { status: 200 });
+      }) as typeof fetch;
+
+      await executor.execute({
+        model: "notion-web/gpt-5.6-sol",
+        body: { messages: [{ role: "user", content: "hi" }] },
+        stream: false,
+        credentials: { apiKey: "token_v2=xyz; space_id=space-1" },
+        signal: null,
+      } as never);
+
+      assert.ok(capturedBody);
+      assert.equal(capturedBody.transcript[0].type, "config");
+      assert.equal(capturedBody.transcript[0].value?.model, "orange-mousse");
     } finally {
       globalThis.fetch = originalFetch;
     }

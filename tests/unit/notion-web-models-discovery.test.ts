@@ -56,9 +56,22 @@ test("parseNotionAvailableModels maps enabled models and skips disabled", () => 
   assert.ok(models.some((m) => m.id === "orange-mousse" && m.name === "GPT-5.6 Sol"));
   assert.ok(models.some((m) => m.id === "ambrosia-tart-high" && m.name === "Opus 4.8"));
   assert.ok(models.some((m) => m.id === "notion-ai"));
+  // Friendly slug aliases so clients can select "gpt-5.6-sol" like the web label.
+  assert.ok(models.some((m) => m.id === "gpt-5.6-sol" && m.name === "GPT-5.6 Sol"));
+  assert.ok(models.some((m) => m.id === "opus-4.8" && m.name === "Opus 4.8"));
   const sol = models.find((m) => m.id === "orange-mousse");
   assert.equal(sol?.supportsReasoning, true);
   assert.equal(sol?.owned_by, "openai");
+});
+
+test("resolveNotionCodename maps prefixes, slugs, and display names to food codenames", () => {
+  assert.equal(notionModels.resolveNotionCodename("orange-mousse"), "orange-mousse");
+  assert.equal(notionModels.resolveNotionCodename("notion-web/orange-mousse"), "orange-mousse");
+  assert.equal(notionModels.resolveNotionCodename("nw/orange-mousse"), "orange-mousse");
+  assert.equal(notionModels.resolveNotionCodename("gpt-5.6-sol"), "orange-mousse");
+  assert.equal(notionModels.resolveNotionCodename("GPT-5.6 Sol"), "orange-mousse");
+  assert.equal(notionModels.resolveNotionCodename("notion-ai"), "");
+  assert.equal(notionModels.resolveNotionCodename(""), "");
 });
 
 test("parseNotionAvailableModels returns empty for invalid payloads", () => {

@@ -7,13 +7,17 @@
  * build the cookie/headers/body the models-discovery route needs.
  */
 
-const NOTION_APP_ORIGIN = "https://www.notion.so";
+// Browser AI surface uses app.notion.com (live capture 2026-07-19). www.notion.so
+// still works for many paths but can return a different space default / cookie
+// domain behavior — prefer the same host the web picker uses.
+const NOTION_APP_ORIGIN = "https://app.notion.com";
+const NOTION_LEGACY_ORIGIN = "https://www.notion.so";
 const NOTION_MODELS_URL = `${NOTION_APP_ORIGIN}/api/v3/getAvailableModels`;
 const NOTION_SPACES_URL = `${NOTION_APP_ORIGIN}/api/v3/getSpaces`;
 const NOTION_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 /** Recent Notion web client version — accepted loosely but required by some paths. */
-const NOTION_CLIENT_VERSION = "23.13.20260718.1805";
+const NOTION_CLIENT_VERSION = "23.13.20260719.0708";
 
 export type NotionDiscoveredModel = {
   id: string;
@@ -105,8 +109,27 @@ function rowSupportsReasoning(row: Record<string, unknown>): boolean {
 }
 
 /**
+ * Slugify Notion's human picker label ("GPT-5.6 Sol" → "gpt-5.6-sol") so
+ * OpenAI-compatible clients can request a readable id as well as the food
+ * codename the runInferenceTranscript API actually needs.
+ */
+export function slugifyNotionDisplayName(name: string): string {
+  // Keep dots so versioned labels stay readable ("GPT-5.6 Sol" → "gpt-5.6-sol",
+  // not "gpt-5-6-sol"). Collapse other punctuation/spaces to single hyphens.
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/\.{2,}/g, ".")
+    .replace(/^[-.]+|[-.]+$/g, "");
+}
+
+/**
  * Parse one getAvailableModels list entry into a model, or `null` when the entry
  * should be skipped (disabled, malformed, or a duplicate id already in `seen`).
+ *
+ * Restricted-access models (e.g. Fable 5 / acai-budino-high) are kept when
+ * `isDisabled !== true` — the web picker lists them the same way.
  */
 function parseNotionModelEntry(
   entry: unknown,
@@ -126,6 +149,32 @@ function parseNotionModelEntry(
     owned_by: trimmedOrFallback(row.modelFamily, "notion"),
     ...(rowSupportsReasoning(row) ? { supportsReasoning: true } : {}),
   };
+}
+
+/**
+ * After parsing codenames, also expose friendly slug ids (gpt-5.6-sol) that
+ * resolve back to the codename at inference time. The web picker shows
+ * modelMessage; OpenAI clients typically select by id — dual listing closes
+ * the "why different models than the web?" gap.
+ */
+export function withFriendlyNotionAliases(
+  models: NotionDiscoveredModel[]
+): NotionDiscoveredModel[] {
+  const seen = new Set(models.map((m) => m.id));
+  const out = [...models];
+  for (const m of models) {
+    if (m.id === "notion-ai") continue;
+    const slug = slugifyNotionDisplayName(m.name);
+    if (!slug || slug === m.id || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push({
+      id: slug,
+      name: m.name,
+      owned_by: m.owned_by,
+      ...(m.supportsReasoning ? { supportsReasoning: true } : {}),
+    });
+  }
+  return out;
 }
 
 /** Ensure a stable default id always exists for clients that still request notion-ai. */
@@ -154,7 +203,7 @@ export function parseNotionAvailableModels(data: unknown): NotionDiscoveredModel
     if (model) out.push(model);
   }
 
-  return withDefaultNotionModel(out, seen);
+  return withFriendlyNotionAliases(withDefaultNotionModel(out, seen));
 }
 
 export function buildNotionModelsDiscoveryHeaders(token: string): Record<string, string> {
@@ -311,9 +360,54 @@ export async function discoverNotionWebModels(opts: {
   return { models, spaceId, source: "api" };
 }
 
+/**
+ * Build a reverse map of friendly labels/slugs → Notion food codenames.
+ * Used by the executor so clients can request either id style.
+ */
+export function buildNotionFriendlyToCodenameMap(
+  models: readonly NotionDiscoveredModel[] = NOTION_WEB_FALLBACK_MODELS
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const m of models) {
+    if (!m?.id || m.id === "notion-ai") continue;
+    map.set(m.id, m.id);
+    map.set(m.id.toLowerCase(), m.id);
+    if (m.name) {
+      map.set(m.name.toLowerCase(), m.id);
+      const slug = slugifyNotionDisplayName(m.name);
+      if (slug) map.set(slug, m.id);
+    }
+  }
+  return map;
+}
+
+/**
+ * Normalize a client model id to the codename Notion's transcript API expects.
+ * Accepts provider prefixes (notion-web/, nw/), food codenames, display names,
+ * and slugified labels (gpt-5.6-sol).
+ */
+export function resolveNotionCodename(
+  model: string | undefined | null,
+  extraModels: readonly NotionDiscoveredModel[] = []
+): string {
+  let m = typeof model === "string" ? model.trim() : "";
+  if (!m || m === "notion-ai") return "";
+  // Strip provider prefixes added by /v1/models catalog.
+  if (m.startsWith("notion-web/")) m = m.slice("notion-web/".length);
+  else if (m.startsWith("nw/")) m = m.slice(3);
+  if (!m || m === "notion-ai") return "";
+
+  const map = buildNotionFriendlyToCodenameMap([
+    ...NOTION_WEB_FALLBACK_MODELS,
+    ...extraModels,
+  ]);
+  return map.get(m) || map.get(m.toLowerCase()) || map.get(slugifyNotionDisplayName(m)) || m;
+}
+
 export {
   NOTION_MODELS_URL,
   NOTION_SPACES_URL,
   NOTION_APP_ORIGIN,
+  NOTION_LEGACY_ORIGIN,
   NOTION_CLIENT_VERSION,
 };

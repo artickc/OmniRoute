@@ -44,6 +44,7 @@ import {
 import {
   discoverNotionWebModels,
   NOTION_WEB_FALLBACK_MODELS,
+  withFriendlyNotionAliases,
 } from "@omniroute/open-sse/services/notionWebModels.ts";
 import {
   AZURE_AI_DEFAULT_BASE_URL,
@@ -550,7 +551,7 @@ export async function GET(
         return buildResponse({
           provider,
           connectionId,
-          models: NOTION_WEB_FALLBACK_MODELS,
+          models: withFriendlyNotionAliases(NOTION_WEB_FALLBACK_MODELS),
           source: "local_catalog",
           intentional: true,
           warning: "No token_v2 cookie — using seed Notion AI model list",
@@ -568,6 +569,7 @@ export async function GET(
               ...init,
             }),
         });
+        // parseNotionAvailableModels already adds friendly slug aliases.
         return buildApiDiscoveryResponse(discovery.models);
       } catch (error) {
         console.log("Error fetching models from notion-web", {
@@ -581,7 +583,7 @@ export async function GET(
         return buildResponse({
           provider,
           connectionId,
-          models: NOTION_WEB_FALLBACK_MODELS,
+          models: withFriendlyNotionAliases(NOTION_WEB_FALLBACK_MODELS),
           source: "local_catalog",
           intentional: true,
           warning: "API unavailable — using seed Notion AI model list",
