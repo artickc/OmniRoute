@@ -9,11 +9,10 @@ import { sanitizeErrorMessage } from "../../utils/error.ts";
 import {
   AdobeFireflyError,
   adobeFireflyGenerateVideo,
-  resolveAdobeAccessToken,
-  resolveAdobeArpSessionId,
   resolveAdobeSourceImageIds,
   resolveAdobeVideoModel,
 } from "../../services/adobeFireflyClient.ts";
+import { ensureAdobeFireflySession } from "../../services/adobeFireflySession.ts";
 
 function normalizePositiveNumber(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -47,7 +46,14 @@ export async function handleAdobeFireflyVideoGeneration({
   }
 
   try {
-    const accessToken = await resolveAdobeAccessToken(credentials, fetchImpl);
+    const session = await ensureAdobeFireflySession({
+      credentials,
+      fetchImpl,
+      log,
+    });
+    const accessToken = session.accessToken;
+    const sessionCookie = session.cookie || undefined;
+    const arpSessionId = session.arpSessionId;
     const timeoutMs = normalizePositiveNumber(body.timeout_ms, 300_000);
     const seed =
       typeof body.seed === "number"
@@ -55,21 +61,10 @@ export async function handleAdobeFireflyVideoGeneration({
         : typeof body.seed === "string" && String(body.seed).trim()
           ? Number(body.seed)
           : undefined;
-    // Keep raw paste for Cookie + sherlockToken (x-arp-session-id).
-    const psd = (credentials as { providerSpecificData?: { cookie?: string } })
-      ?.providerSpecificData;
-    const sessionCookie =
-      (typeof psd?.cookie === "string" && psd.cookie.trim()) ||
-      (typeof credentials?.apiKey === "string" && credentials.apiKey.trim()) ||
-      (typeof credentials?.accessToken === "string" && credentials.accessToken.includes(";")
-        ? credentials.accessToken
-        : undefined);
 
     // Kling i2v / Veo ref / Sora frame: upload reference images first.
     const { id: videoModelId } = resolveAdobeVideoModel(String(model));
     const maxFrames = videoModelId.includes("kling") || videoModelId.includes("sora") ? 2 : 3;
-    // One ARP for frame upload + video submit (matches browser).
-    const arpSessionId = resolveAdobeArpSessionId(sessionCookie);
     const sourceImageIds = await resolveAdobeSourceImageIds({
       accessToken,
       body,
@@ -84,7 +79,8 @@ export async function handleAdobeFireflyVideoGeneration({
     log?.info?.(
       "VIDEO",
       `${provider}/${model} (adobe-firefly) | prompt: "${prompt.slice(0, 60)}${prompt.length > 60 ? "..." : ""}"` +
-        (sourceImageIds.length ? ` | frames: ${sourceImageIds.length}` : "")
+        (sourceImageIds.length ? ` | frames: ${sourceImageIds.length}` : "") +
+        ` | session=${session.source}`
     );
 
     const result = await adobeFireflyGenerateVideo({
