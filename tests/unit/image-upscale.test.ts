@@ -223,17 +223,20 @@ test("resolveAdobeUpscaleModel maps ids to upstream topaz versions and rejects o
   }
 });
 
-test("resolveAdobeCreativityLevel maps 0-100 % onto the 0-5 integer level", () => {
-  assert.equal(ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL, 5);
+test("resolveAdobeCreativityLevel maps 0-100 % onto the 0-1 upsample wire float", () => {
+  // Live colligo on /v2/3p-images/upsample rejects creativityLevel > 1.
+  assert.equal(ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL, 1);
   assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 0 }), 0);
-  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 100 }), 5);
-  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 50 }), 3); // 2.5 → 3
-  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 40 }), 2);
+  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 100 }), 1);
+  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 50 }), 0.5);
+  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 40 }), 0.4);
   assert.equal(resolveAdobeCreativityLevel({}), 0);
-  // An explicit level wins over the percentage and is clamped.
-  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 100, creativityLevel: 1 }), 1);
-  assert.equal(resolveAdobeCreativityLevel({ creativityLevel: "4" }), 4);
-  assert.equal(resolveAdobeCreativityLevel({ creativityLevel: 99 }), 5);
+  // Explicit 0-1 wins over percent.
+  assert.equal(resolveAdobeCreativityLevel({ creativityPercent: 100, creativityLevel: 0.25 }), 0.25);
+  // Legacy 1-5 integer scale (discovery docs) is mapped onto 0-1.
+  assert.equal(resolveAdobeCreativityLevel({ creativityLevel: "4" }), 0.8);
+  assert.equal(resolveAdobeCreativityLevel({ creativityLevel: 5 }), 1);
+  assert.equal(resolveAdobeCreativityLevel({ creativityLevel: 99 }), 1);
   assert.equal(resolveAdobeCreativityLevel({ creativityLevel: -3 }), 0);
 });
 
@@ -316,13 +319,13 @@ test("adobeFireflyUpscaleImage submits to /v2/3p-images/upsample and polls the r
 
   assert.equal(result.url, "https://s3.example/upscaled.png?X-Amz=1");
   assert.equal(result.factor, 4);
-  assert.equal(result.creativityLevel, 5);
+  assert.equal(result.creativityLevel, 1);
 
   assert.equal(calls[0]!.url, ADOBE_FIREFLY_IMAGE_UPSAMPLE_URL);
   const submitted = JSON.parse(String(calls[0]!.init?.body));
   assert.equal(submitted.modelVersion, "reimagine");
   assert.equal(submitted.upsamplerFactor, 4);
-  assert.equal(submitted.creativityLevel, 5);
+  assert.equal(submitted.creativityLevel, 1);
   assert.deepEqual(submitted.referenceBlobs, [{ id: "blob-9", usage: "general" }]);
 
   // Poll URL is rewritten to the BKS host, exactly like generate-async.

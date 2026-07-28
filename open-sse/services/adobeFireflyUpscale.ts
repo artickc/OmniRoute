@@ -51,8 +51,15 @@ export const ADOBE_FIREFLY_UPSCALE_TIMEOUT_MS = 300_000;
 /** Same submit-retry budget as generate-async (colligo 408 recovery). */
 const SUBMIT_MAX_ATTEMPTS = 5;
 
-/** Firefly creativity control is an integer level; 0 = off (browser default). */
-export const ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL = 5;
+/**
+ * Firefly Topaz upsample wire range for `creativityLevel`.
+ *
+ * Live colligo on `/v2/3p-images/upsample` rejects values > 1
+ * (`less_than_equal`, `le: 1.0`). The browser capture sends `0` (off).
+ * Discovery docs mention a 1–5 integer scale for *other* Topaz endpoints —
+ * that scale is NOT accepted by upsample, so we stay on 0–1.
+ */
+export const ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL = 1;
 
 export type AdobeFireflyUpscaleModelId = "topaz" | "topaz-standard" | "topaz-bloom";
 
@@ -129,9 +136,13 @@ export function isAdobeFireflyUpscaleModel(model: string): boolean {
 }
 
 /**
- * Map a 0-100 creativity percentage onto Firefly's integer `creativityLevel` (0-5).
- * A caller may instead pass an explicit level via `creativityLevel`, which wins and
- * is only clamped.
+ * Map a 0-100 creativity percentage onto Firefly upsample's `creativityLevel` (0–1 float).
+ *
+ * Precedence:
+ *   1. explicit `creativityLevel` — if in (1, 5] treat as legacy 1–5 integer scale
+ *      and map onto 0–1 (`level / 5`); otherwise clamp to 0–1
+ *   2. `creativityPercent` 0–100 → 0–1
+ *   3. default 0 (browser default / off)
  */
 export function resolveAdobeCreativityLevel(opts: {
   creativityPercent?: number | null;
@@ -139,22 +150,31 @@ export function resolveAdobeCreativityLevel(opts: {
 }): number {
   const explicit = opts.creativityLevel;
   if (typeof explicit === "number" && Number.isFinite(explicit)) {
-    return clampLevel(explicit);
+    return clampLevel(normalizeExplicitCreativity(explicit));
   }
   if (typeof explicit === "string" && explicit.trim() && Number.isFinite(Number(explicit))) {
-    return clampLevel(Number(explicit));
+    return clampLevel(normalizeExplicitCreativity(Number(explicit)));
   }
 
   const percent = typeof opts.creativityPercent === "number" && Number.isFinite(opts.creativityPercent)
     ? Math.max(0, Math.min(100, opts.creativityPercent))
     : 0;
-  return clampLevel((percent / 100) * ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL);
+  return clampLevel(percent / 100);
 }
 
+/** Legacy 1–5 integer scale (discovery docs) → 0–1 wire float. Values already in 0–1 pass through. */
+function normalizeExplicitCreativity(value: number): number {
+  if (value > ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL && value <= 5) {
+    return value / 5;
+  }
+  return value;
+}
+
+/** Clamp to the upsample wire range [0, 1], two decimal places. */
 function clampLevel(value: number): number {
-  const n = Math.round(value);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL, n));
+  if (!Number.isFinite(value)) return 0;
+  const clamped = Math.max(0, Math.min(ADOBE_FIREFLY_MAX_CREATIVITY_LEVEL, value));
+  return Math.round(clamped * 100) / 100;
 }
 
 /**
