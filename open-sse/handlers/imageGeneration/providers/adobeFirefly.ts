@@ -15,15 +15,12 @@ import { saveImageErrorResult, saveImageSuccessResult } from "../../imageGenerat
 import {
   AdobeFireflyError,
   adobeFireflyGenerateImage,
+  adobeFireflyImageTimeoutMs,
+  adobeFireflyMaxImageRefs,
   resolveAdobeSourceImageIds,
   resolveAdobeImageModel,
 } from "../../../services/adobeFireflyClient.ts";
 import { ensureAdobeFireflySession } from "../../../services/adobeFireflySession.ts";
-
-function normalizePositiveNumber(value: unknown, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
 
 export async function handleAdobeFireflyImageGeneration({
   model,
@@ -78,7 +75,6 @@ export async function handleAdobeFireflyImageGeneration({
     const accessToken = session.accessToken;
     const sessionCookie = session.cookie || undefined;
     const arpSessionId = session.arpSessionId;
-    const timeoutMs = normalizePositiveNumber(body.timeout_ms, 180_000);
     const seed =
       typeof body.seed === "number"
         ? body.seed
@@ -86,12 +82,10 @@ export async function handleAdobeFireflyImageGeneration({
           ? Number(body.seed)
           : undefined;
 
-    // Cap uploads by model family (matches MediaViewModel GetSourceImageLimit).
+    // Cap uploads by model family. gpt-image: 2 subject refs max (3-4+ stalls colligo → 504).
+    // nano: 4 general refs for multi-panel composition.
     const { id: resolvedId } = resolveAdobeImageModel(model);
-    const maxRefs =
-      resolvedId.includes("nano-banana") || resolvedId.includes("gpt-image")
-        ? 4
-        : 2;
+    const maxRefs = adobeFireflyMaxImageRefs(resolvedId);
 
     const sourceImageIds = await resolveAdobeSourceImageIds({
       accessToken,
@@ -104,11 +98,23 @@ export async function handleAdobeFireflyImageGeneration({
       log,
     });
 
+    const explicitTimeout =
+      typeof body.timeout_ms === "number"
+        ? body.timeout_ms
+        : typeof body.timeout_ms === "string" && body.timeout_ms.trim()
+          ? Number(body.timeout_ms)
+          : undefined;
+    const timeoutMs = adobeFireflyImageTimeoutMs({
+      timeoutMs: explicitTimeout,
+      refCount: sourceImageIds.length,
+    });
+
     log?.info?.(
       "IMAGE",
       `${provider}/${model} (adobe-firefly) | prompt: "${prompt.slice(0, 60)}${prompt.length > 60 ? "..." : ""}"` +
-        (sourceImageIds.length ? ` | refs: ${sourceImageIds.length}` : "") +
-        ` | session=${session.source}`
+        (sourceImageIds.length ? ` | refs: ${sourceImageIds.length}/${maxRefs}` : "") +
+        ` | session=${session.source}` +
+        ` | pollTimeoutMs=${timeoutMs}`
     );
 
     const result = await adobeFireflyGenerateImage({
