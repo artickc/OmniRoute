@@ -46,6 +46,7 @@ export async function maybeHandleConolModelDiscovery(
   const seedModels = CONOL_FALLBACK_MODELS.map((model) => ({
     id: model.id,
     name: model.name,
+    supportsVision: model.supportsVision,
   }));
   if (!cookie) {
     const fallback = options.buildDiscoveryFallbackResponse({
