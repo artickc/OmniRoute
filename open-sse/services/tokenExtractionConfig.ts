@@ -187,6 +187,16 @@ const RAW_CONFIGS: TokenExtractionConfig[] = [
 
   // ── Kimi Web ──────────────────────────────────────────────
   config(
+    "conol-web",
+    "Conol",
+    "https://conol.ai/login",
+    "https://conol.ai",
+    [{ type: "cookie", name: "__Secure-better-auth.session_token", domain: "conol.ai" }],
+    "Log in to conol.ai. The __Secure-better-auth.session_token cookie will be extracted.",
+    { cookieDomain: "conol.ai" }
+  ),
+
+  config(
     "kimi-web",
     "Kimi (Moonshot)",
     "https://www.kimi.com/",

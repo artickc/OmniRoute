@@ -348,6 +348,20 @@ export const WEB_COOKIE_PROVIDERS = {
       'copy the "token" value (or use tongyi_sso_ticket cookie as Bearer token).',
     toolCalling: "emulated",
   },
+  "conol-web": {
+    id: "conol-web",
+    alias: "cnl",
+    name: "Conol (Unofficial/Experimental)",
+    icon: "auto_awesome",
+    color: "#F6C945",
+    textIcon: "CO",
+    website: "https://conol.ai",
+    subscriptionRisk: true,
+    riskNoticeVariant: "webCookie",
+    authHint:
+      "Use browser sign-in, or paste the full Cookie header from conol.ai. " +
+      "The __Secure-better-auth.session_token cookie is required.",
+  },
   "gemini-business": {
     id: "gemini-business",
     alias: "gembiz",
@@ -391,7 +405,7 @@ export const WEB_COOKIE_PROVIDERS = {
     riskNoticeVariant: "webCookie",
     authHint: "Paste the full Cookie header from chat.z.ai (must include the token=<JWT> cookie)",
   },
-  "promptql": {
+  promptql: {
     id: "promptql",
     alias: "pql",
     name: "PromptQL (Unofficial/Experimental)",

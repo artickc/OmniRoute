@@ -455,6 +455,9 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   "xao",
   // Firecrawl team credits (GET /v2/team/credit-usage)
   "firecrawl",
+  // Conol session cookie → GET /api/billing/balance (daily + extra credits)
+  "conol-web",
+  "cnl",
 ];
 
 // ── Zod validation at module load (Phase 7.2) ──

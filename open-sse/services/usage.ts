@@ -67,6 +67,7 @@ import { getXiaomiMimoUsage } from "./usage/xiaomi-mimo.ts";
 import { getXaiUsage } from "./usage/xai.ts";
 import { getXaiOauthUsage } from "./usage/xaiOauth.ts";
 import { getFirecrawlUsage } from "./usage/firecrawl.ts";
+import { getConolUsage } from "./usage/conol.ts";
 
 type JsonRecord = Record<string, unknown>;
 type UsageProviderConnection = JsonRecord & {
@@ -128,6 +129,9 @@ export const USAGE_FETCHER_PROVIDERS = [
   "ha",
   // Firecrawl team credits (GET /v2/team/credit-usage)
   "firecrawl",
+  // Conol session cookie → GET /api/billing/balance (daily + extra credits)
+  "conol-web",
+  "cnl",
 ] as const;
 
 export type UsageFetcherProvider = (typeof USAGE_FETCHER_PROVIDERS)[number];
@@ -225,6 +229,9 @@ export async function getUsageForProvider(
       return await getHyperAgentUsage(apiKey || accessToken, providerSpecificData);
     case "firecrawl":
       return await getFirecrawlUsage(id || "", apiKey);
+    case "conol-web":
+    case "cnl":
+      return await getConolUsage(apiKey || accessToken, providerSpecificData);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }

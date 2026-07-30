@@ -83,16 +83,14 @@ import {
   isAutoFetchModelsEnabled,
   persistDiscoveredModels,
 } from "@/lib/providerModels/modelDiscovery";
-import {
-  buildProviderModelsUrl,
-  getDiscoveryClientVersionOptions,
-} from "./discoveryClientVersion";
+import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
 import {
   parseGeminiModelsList,
   type GeminiDiscoveryModel,
 } from "@/lib/providerModels/geminiModelsParser";
 import { getSyncedAvailableModels, getCustomModels } from "@/lib/db/models";
 import { fetchCursorAgentModels } from "@/lib/providerModels/cursorAgent";
+import { maybeHandleConolModelDiscovery } from "./conolDiscovery";
 import {
   type JsonRecord,
   asRecord,
@@ -362,7 +360,8 @@ export async function GET(
         ...((model as Record<string, unknown>).supportedEndpoints
           ? {
               supportedEndpoints: (model as Record<string, unknown>).supportedEndpoints as
-                string[] | undefined,
+                | string[]
+                | undefined,
             }
           : {}),
         ...(registryCatalogModels.length > 0 ? { owned_by: provider } : {}),
@@ -507,7 +506,8 @@ export async function GET(
         ...((model as Record<string, unknown>).supportedEndpoints
           ? {
               supportedEndpoints: (model as Record<string, unknown>).supportedEndpoints as
-                string[] | undefined,
+                | string[]
+                | undefined,
             }
           : {}),
         ...(freshRegistry.length > 0 ? { owned_by: provider } : {}),
@@ -663,6 +663,21 @@ export async function GET(
         });
       }
     }
+
+    const conolResponse = await maybeHandleConolModelDiscovery({
+      provider,
+      connectionId,
+      apiKey,
+      accessToken,
+      providerSpecificData: connection.providerSpecificData,
+      proxy,
+      maybeReturnCachedDiscovery,
+      maybeReturnAutoFetchDisabled,
+      buildDiscoveryFallbackResponse,
+      buildResponse,
+      buildApiDiscoveryResponse,
+    });
+    if (conolResponse) return conolResponse;
 
     if (provider === "bedrock") {
       const cachedResponse = maybeReturnCachedDiscovery();
@@ -2062,7 +2077,8 @@ export async function GET(
           ...((m as Record<string, unknown>).supportedEndpoints
             ? {
                 supportedEndpoints: (m as Record<string, unknown>).supportedEndpoints as
-                  string[] | undefined,
+                  | string[]
+                  | undefined,
               }
             : {}),
           ...(registryCatalogModels.length > 0 ? { owned_by: provider } : {}),
