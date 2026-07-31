@@ -13,14 +13,14 @@ import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 
 const ADOBE_FIREFLY_SLUGS = new Set(["adobe-firefly", "firefly"]);
 
-/** Resolve the provider slug (e.g. "conol-web", "adobe-firefly") from the connection row. */
+/** Resolve the provider slug (e.g. "claude-web", "adobe-firefly") from the connection row. */
 function resolveProviderSlug(connection: Record<string, unknown> | null): string {
   const raw = connection?.provider;
   if (typeof raw === "string" && raw.trim()) return raw.trim();
   return "";
 }
 
-// ─── POST: Start login flow ────────────────────────────────────────────────
+// тФАтФАтФА POST: Start login flow тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
 
 export async function POST(
   req: NextRequest,
@@ -37,7 +37,7 @@ export async function POST(
 
   const body = await req.json().catch(() => ({}));
   const timeout = typeof body.timeout === "number" ? body.timeout : undefined;
-  const providerSlug = resolveProviderSlug(provider);
+  const providerSlug = resolveProviderSlug(provider as Record<string, unknown>);
 
   try {
     // Adobe Firefly is special: the IMS JWT is only ever in the Authorization
@@ -52,11 +52,16 @@ export async function POST(
       if (fireflyResult.success && fireflyResult.credentials) {
         const credentials = fireflyResult.credentials;
         try {
-          // Store the JWT in api_key (where resolveAdobeAccessToken looks first)
-          // and the cookie + access_token in provider_specific_data.
+          // Store the JWT in apiKey (where resolveAdobeAccessToken looks first)
+          // and the cookie + access_token in providerSpecificData (camelCase тАФ
+          // updateProviderConnection ignores snake_case keys).
           const providerSpecificData: Record<string, string> = {};
-          if (credentials.accessToken) providerSpecificData.access_token = credentials.accessToken;
-          if (credentials.cookie) providerSpecificData.cookie = credentials.cookie;
+          if (credentials.accessToken) {
+            providerSpecificData.access_token = credentials.accessToken;
+          }
+          if (credentials.cookie) {
+            providerSpecificData.cookie = credentials.cookie;
+          }
 
           await updateProviderConnection(id, {
             apiKey: credentials.accessToken || "",
@@ -65,9 +70,9 @@ export async function POST(
 
           return NextResponse.json({
             success: true,
-            // Return fields the C# LoginWithOmniRouteAdobeFireflyAsync reads.
             accessToken: credentials.accessToken || "",
             cookie: credentials.cookie || "",
+            account: fireflyResult.account || "",
             credentials: providerSpecificData,
             persisted: true,
           });
@@ -88,9 +93,11 @@ export async function POST(
 
     // Generic web-cookie path: pass the provider SLUG (not the DB id) so
     // TOKEN_EXTRACTION_CONFIGS can find the extraction config.
+    // Bug: the previous code passed `id` (connection UUID), so the lookup always
+    // missed and returned "No extraction config" without launching a browser.
     const { inAppLoginService } = await import("@omniroute/open-sse/services/inAppLoginService.ts");
 
-    const result = await inAppLoginService.startLogin(providerSlug, { timeout });
+    const result = await inAppLoginService.startLogin(providerSlug || id, { timeout });
 
     // Persist credentials if extraction succeeded
     if (result.success && result.credentials) {
