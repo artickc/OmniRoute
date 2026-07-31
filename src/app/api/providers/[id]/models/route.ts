@@ -84,6 +84,7 @@ import {
   persistDiscoveredModels,
 } from "@/lib/providerModels/modelDiscovery";
 import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
+import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
 import {
   parseGeminiModelsList,
   type GeminiDiscoveryModel,
@@ -360,8 +361,7 @@ export async function GET(
         ...((model as Record<string, unknown>).supportedEndpoints
           ? {
               supportedEndpoints: (model as Record<string, unknown>).supportedEndpoints as
-                | string[]
-                | undefined,
+                string[] | undefined,
             }
           : {}),
         ...(registryCatalogModels.length > 0 ? { owned_by: provider } : {}),
@@ -506,8 +506,7 @@ export async function GET(
         ...((model as Record<string, unknown>).supportedEndpoints
           ? {
               supportedEndpoints: (model as Record<string, unknown>).supportedEndpoints as
-                | string[]
-                | undefined,
+                string[] | undefined,
             }
           : {}),
         ...(freshRegistry.length > 0 ? { owned_by: provider } : {}),
@@ -2077,8 +2076,7 @@ export async function GET(
           ...((m as Record<string, unknown>).supportedEndpoints
             ? {
                 supportedEndpoints: (m as Record<string, unknown>).supportedEndpoints as
-                  | string[]
-                  | undefined,
+                  string[] | undefined,
               }
             : {}),
           ...(registryCatalogModels.length > 0 ? { owned_by: provider } : {}),
