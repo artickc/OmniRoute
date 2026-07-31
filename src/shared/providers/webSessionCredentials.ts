@@ -318,7 +318,9 @@ export const WEB_SESSION_CREDENTIAL_REQUIREMENTS = {
     credentialName: "__Secure-better-auth.session_token",
     placeholder: "__Secure-better-auth.session_token=... or full Cookie header from conol.ai",
     acceptsFullCookieHeader: true,
-    storageKeys: ["cookie"],
+    // Mirrors resolveConolCredentials() in open-sse/services/conolAuth.ts, which
+    // accepts the value under `cookie`, the raw cookie name, or `sessionToken`.
+    storageKeys: ["cookie", "__Secure-better-auth.session_token", "sessionToken"],
   },
 } satisfies Record<keyof typeof WEB_COOKIE_PROVIDERS, WebSessionCredentialRequirement>;
 

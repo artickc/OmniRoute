@@ -235,7 +235,11 @@ test("VB-S02c: Conol multimodal models bypass the vision bridge", async () => {
 });
 
 test("VB-S02d: Conol text-only models remain eligible for the vision bridge", async () => {
-  const guardrail = createGuardrail();
+  // A user who actually has Conol credentials must keep their chosen Conol model.
+  // v3.8.49 only whole-request-reroutes when the original model is NOT credentialed
+  // (visionBridge.ts step 9); with credentials present we fall through to the
+  // describe path, which is the Conol behaviour this regression test pins.
+  const guardrail = createGuardrail({ deps: { hasUsableCredentials: async () => true } });
   const model = "conol-web/deepseek/deepseek-v4-pro";
   const payload = createPayload({
     model,
