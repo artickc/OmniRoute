@@ -84,7 +84,6 @@ import {
   persistDiscoveredModels,
 } from "@/lib/providerModels/modelDiscovery";
 import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
-import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
 import {
   parseGeminiModelsList,
   type GeminiDiscoveryModel,
