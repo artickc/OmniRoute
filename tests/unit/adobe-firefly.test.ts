@@ -191,8 +191,9 @@ test("buildAdobeImagePayload produces nano and gpt-image shapes", () => {
   });
   assert.equal(gpt.modelId, "gpt-image");
   assert.equal((gpt.generationSettings as Record<string, unknown>).detailLevel, 5);
-  // Live browser body uses size:"auto" and no top-level size/outputResolution
-  assert.equal((gpt.modelSpecificPayload as Record<string, unknown>).size, "auto");
+  // VibeProxy maps quality/resolution tiers onto GPT_SIZE_MAP pixel sizes so 4K is honored
+  // (live SPA often uses size:"auto" which can under-deliver for Screenshot Quality).
+  assert.equal((gpt.modelSpecificPayload as Record<string, unknown>).size, "1024x1024");
   assert.equal(gpt.size, undefined);
   assert.equal(gpt.outputResolution, undefined);
 });
