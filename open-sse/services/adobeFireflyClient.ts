@@ -738,15 +738,23 @@ export function buildAdobeImagePayload(opts: {
   }
 
   if (opts.modelSpec.family === "gpt-image") {
-    // Live firefly.adobe.com body (adobe/image_generate.txt) — no top-level size /
-    // outputResolution; modelSpecificPayload.size is "auto".
+    // Firefly GPT Image historically used modelSpecificPayload.size:"auto" only.
+    // That ignored Screenshot Quality 4K and often returned ~1–2K (e.g. 1672×941).
+    // When we know the tier, request the explicit GPT_SIZE_MAP pixel size; fall back to
+    // "auto" only when the map has no entry. detailLevel still carries quality.
+    const gptMap = GPT_SIZE_MAP[opts.outputResolution] || GPT_SIZE_MAP["2K"];
+    const gptPixel = gptMap[ratio] || gptMap["1:1"];
+    const gptSizeToken =
+      gptPixel && gptPixel.width > 0 && gptPixel.height > 0
+        ? `${gptPixel.width}x${gptPixel.height}`
+        : "auto";
     const payload: Record<string, unknown> = {
       n: 1,
       seeds,
       output: { storeInputs: true },
       prompt: opts.prompt,
       referenceBlobs: [] as Array<Record<string, unknown>>,
-      modelSpecificPayload: { size: "auto" },
+      modelSpecificPayload: { size: gptSizeToken },
       modelId: opts.modelSpec.upstreamModelId,
       modelVersion: opts.modelSpec.upstreamModelVersion,
       generationMetadata: { module: "text2image", submodule: "ff-image-generate" },
@@ -767,7 +775,8 @@ export function buildAdobeImagePayload(opts: {
         id,
         usage: "subject",
       }));
-      payload.modelSpecificPayload = {};
+      // Keep the requested pixel size on image2image — dropping it forced "auto" ~1K output.
+      payload.modelSpecificPayload = { size: gptSizeToken };
     }
     return payload;
   }
