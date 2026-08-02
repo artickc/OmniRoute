@@ -13,9 +13,11 @@
  * Protocol over WebSocket — zero Playwright dependency.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { decodeAdobeJwtPayload, isAdobeUserAccessToken } from "./adobeFireflyClient.ts";
 import { sanitizeErrorMessage } from "../utils/error.ts";
 
 const FIREFLY_HOME_URL = "https://firefly.adobe.com/";
@@ -34,7 +36,7 @@ export interface AdobeFireflyBrowserLoginResult {
   success: boolean;
   credentials?: { accessToken?: string; cookie?: string };
   arpSessionId?: string;
-  /** Best-effort Adobe account label (email or user id) decoded from the JWT. */
+  /** Human-readable Adobe account label resolved from IMS userinfo. */
   account?: string;
   error?: string;
 }
@@ -52,17 +54,28 @@ type AdobeFireflyBrowserLog = {
 
 let cdpBrowserChain: Promise<void> = Promise.resolve();
 
-/**
- * A non-default profile is required by Chrome 136+ for remote debugging. Keep this profile
- * durable: Adobe IMS SSO lives here and is what lets a background warm mint the next user JWT.
- */
-export function resolveAdobeFireflyBrowserProfileDir(): string {
+function resolveAdobeFireflyDataRoot(): string {
   const dataRoot =
     String(process.env.DATA_DIR || process.env.OMNIROUTE_DATA_DIR || "").trim() ||
     (process.env.LOCALAPPDATA
       ? join(process.env.LOCALAPPDATA, "OmniRoute")
       : join(process.cwd(), ".data"));
-  const profile = join(dataRoot, "adobe-chrome-profile");
+  mkdirSync(dataRoot, { recursive: true });
+  return dataRoot;
+}
+
+export function adobeFireflyBrowserSessionKey(value: unknown): string {
+  const raw = String(value || "legacy-default").trim() || "legacy-default";
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+}
+
+/** Chrome 136+ requires a non-default user-data-dir for remote debugging. */
+export function resolveAdobeFireflyBrowserProfileDir(sessionKey?: string): string {
+  const profile = join(
+    resolveAdobeFireflyDataRoot(),
+    "adobe-chrome-profiles",
+    adobeFireflyBrowserSessionKey(sessionKey)
+  );
   mkdirSync(profile, { recursive: true });
   return profile;
 }
@@ -105,21 +118,54 @@ export function buildAdobeFireflyCookieHeader(
   return parts.join("; ");
 }
 
-/** Best-effort account label from an IMS JWT payload. Exported for unit tests. */
+function humanAdobeLabel(value: unknown): string {
+  const label = typeof value === "string" ? value.trim() : "";
+  if (!label || /@(Adobe|Guest)ID$/i.test(label)) return "";
+  return label;
+}
+
+/** Human-readable label claims only; opaque Adobe IDs are intentionally excluded. */
 export function accountLabelFromAdobeJwt(token: string): string {
-  try {
-    const part = String(token || "").split(".")[1];
-    if (!part) return "";
-    const json = Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const obj = JSON.parse(json) as Record<string, unknown>;
-    for (const key of ["email", "preferred_username", "user_id", "sub"]) {
-      const v = obj[key];
-      if (typeof v === "string" && v.trim()) return v.trim();
-    }
-  } catch {
-    // ignore
+  const obj = decodeAdobeJwtPayload(token);
+  if (!obj) return "";
+  for (const key of ["email", "preferred_username", "name", "display_name"]) {
+    const label = humanAdobeLabel(obj[key]);
+    if (label) return label;
   }
   return "";
+}
+
+/** Resolve email/display name from Adobe IMS; never expose the opaque user_id as a label. */
+export async function resolveAdobeAccountLabel(
+  token: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const claimLabel = accountLabelFromAdobeJwt(token);
+  const payload = decodeAdobeJwtPayload(token);
+  const clientId = humanAdobeLabel(payload?.client_id) || "clio-playground-web";
+  try {
+    const response = await fetchImpl(
+      `https://ims-na1.adobelogin.com/ims/userinfo/v2?client_id=${encodeURIComponent(clientId)}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    if (response.ok) {
+      const user = (await response.json()) as Record<string, unknown>;
+      for (const key of ["email", "preferred_username", "name", "display_name"]) {
+        const label = humanAdobeLabel(user[key]);
+        if (label) return label;
+      }
+      const given = humanAdobeLabel(user.given_name);
+      const family = humanAdobeLabel(user.family_name);
+      const full = [given, family].filter(Boolean).join(" ").trim();
+      if (full) return full;
+    }
+  } catch {
+    // JWT label or generic fallback below keeps login successful if userinfo is unavailable.
+  }
+  return claimLabel || "Adobe account";
 }
 
 /** Resolve system Chrome/Edge executable. Exported for unit tests. */
@@ -195,7 +241,82 @@ async function waitForCdpReady(
   throw new Error(`Chrome DevTools did not become ready: ${lastError}`);
 }
 
-type CdpCookie = { name: string; value: string; domain?: string };
+export type AdobeBrowserCookie = {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+};
+
+type CdpCookie = AdobeBrowserCookie;
+
+function isAdobeCookieDomain(domain: string | undefined): boolean {
+  const value = String(domain || "")
+    .trim()
+    .replace(/^\./, "")
+    .toLowerCase();
+  return (
+    value === "adobe.com" ||
+    value.endsWith(".adobe.com") ||
+    value === "adobelogin.com" ||
+    value.endsWith(".adobelogin.com") ||
+    value === "adobe.io" ||
+    value.endsWith(".adobe.io")
+  );
+}
+
+export function filterAdobeBrowserCookies(cookies: CdpCookie[]): AdobeBrowserCookie[] {
+  return cookies
+    .filter(
+      (cookie) =>
+        isAdobeCookieDomain(cookie.domain) &&
+        Boolean(cookie.name && cookie.value) &&
+        !/[\r\n\0]/.test(cookie.name + cookie.value)
+    )
+    .map((cookie) => ({
+      name: cookie.name,
+      value: cookie.value,
+      ...(cookie.domain ? { domain: cookie.domain } : {}),
+      path: cookie.path || "/",
+      ...(typeof cookie.expires === "number" ? { expires: cookie.expires } : {}),
+      ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+      ...(typeof cookie.secure === "boolean" ? { secure: cookie.secure } : {}),
+      ...(cookie.sameSite ? { sameSite: cookie.sameSite } : {}),
+    }));
+}
+
+function adobeBrowserCookieJarPath(sessionKey: string): string {
+  const dir = join(resolveAdobeFireflyDataRoot(), "adobe-browser-sessions");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${adobeFireflyBrowserSessionKey(sessionKey)}.json`);
+}
+
+function loadAdobeBrowserCookies(sessionKey: string): AdobeBrowserCookie[] {
+  try {
+    const path = adobeBrowserCookieJarPath(sessionKey);
+    if (!existsSync(path)) return [];
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return Array.isArray(parsed) ? filterAdobeBrowserCookies(parsed as CdpCookie[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAdobeBrowserCookies(sessionKey: string, cookies: CdpCookie[]): void {
+  try {
+    writeFileSync(
+      adobeBrowserCookieJarPath(sessionKey),
+      JSON.stringify(filterAdobeBrowserCookies(cookies)),
+      "utf8"
+    );
+  } catch {
+    // Best-effort: login still returns the portable JWT + Firefly risk cookies.
+  }
+}
 
 function parseCookieHeader(cookieHeader: string): Array<{ name: string; value: string }> {
   const cookies: Array<{ name: string; value: string }> = [];
@@ -304,6 +425,7 @@ async function captureViaCdp(opts: {
   timeoutMs: number;
   fallbackAccessToken?: string;
   seedCookie?: string;
+  seedBrowserCookies?: AdobeBrowserCookie[];
   waitForRiskRefresh?: boolean;
 }): Promise<{
   accessToken: string;
@@ -316,7 +438,7 @@ async function captureViaCdp(opts: {
   const pageSockets = new Map<string, CdpSocket>();
   let browserCdp: CdpSocket | null = null;
   const initialForter =
-    parseCookieHeader(opts.seedCookie || "").find(
+    [...(opts.seedBrowserCookies || []), ...parseCookieHeader(opts.seedCookie || "")].find(
       (cookie) => cookie.name.toLowerCase() === "fortertoken"
     )?.value || "";
   const startedAt = Date.now();
@@ -329,7 +451,7 @@ async function captureViaCdp(opts: {
       const headers = request.headers || {};
       const auth = headers.Authorization || headers.authorization || headers.AUTHORIZATION || "";
       const token = extractAdobeBearerTokenFromAuthorization(auth);
-      if (token) capturedAccessToken = token;
+      if (token && isAdobeUserAccessToken(token)) capturedAccessToken = token;
       const arp =
         headers["x-arp-session-id"] ||
         headers["X-Arp-Session-Id"] ||
@@ -348,16 +470,29 @@ async function captureViaCdp(opts: {
   try {
     const browserWs = await openCdp(opts.browserWsUrl);
     browserCdp = new CdpSocket(browserWs, onEvent);
-    const seed = parseCookieHeader(opts.seedCookie || "");
+    const seed: AdobeBrowserCookie[] = [
+      ...(opts.seedBrowserCookies || []),
+      ...parseCookieHeader(opts.seedCookie || "").map((cookie) => ({
+        ...cookie,
+        domain: "firefly.adobe.com",
+        path: "/",
+        secure: true,
+      })),
+    ];
     if (seed.length > 0) {
       await browserCdp
         .send("Storage.setCookies", {
-          cookies: seed.map(({ name, value }) => ({
-            name,
-            value,
-            url: FIREFLY_HOME_URL,
-            path: "/",
-            secure: true,
+          cookies: seed.map((cookie) => ({
+            name: cookie.name,
+            value: cookie.value,
+            ...(cookie.domain ? { domain: cookie.domain } : { url: FIREFLY_HOME_URL }),
+            path: cookie.path || "/",
+            ...(typeof cookie.expires === "number" && cookie.expires > 0
+              ? { expires: cookie.expires }
+              : {}),
+            ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+            ...(typeof cookie.sameSite === "string" ? { sameSite: cookie.sameSite } : {}),
+            secure: cookie.secure !== false,
           })),
         })
         .catch(() => undefined);
@@ -417,7 +552,9 @@ async function captureViaCdp(opts: {
         /* retry while Chrome is settling */
       }
 
-      const accessToken = capturedAccessToken || String(opts.fallbackAccessToken || "").trim();
+      const fallbackToken = String(opts.fallbackAccessToken || "").trim();
+      const accessToken =
+        capturedAccessToken || (isAdobeUserAccessToken(fallbackToken) ? fallbackToken : "");
       if (accessToken) {
         if (!opts.waitForRiskRefresh) {
           return {
@@ -446,7 +583,8 @@ async function captureViaCdp(opts: {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
 
-    const fallback = String(opts.fallbackAccessToken || "").trim();
+    const fallbackRaw = String(opts.fallbackAccessToken || "").trim();
+    const fallback = isAdobeUserAccessToken(fallbackRaw) ? fallbackRaw : "";
     if (fallback && latestCookies.length > 0) {
       return {
         accessToken: capturedAccessToken || fallback,
@@ -491,6 +629,24 @@ function killProcessTree(child: ChildProcess | null): void {
   }
 }
 
+export function buildAdobeFireflyBrowserArgs(opts: {
+  port: number;
+  userDataDir: string;
+  interactive: boolean;
+  freshSession?: boolean;
+}): string[] {
+  return [
+    `--remote-debugging-port=${opts.port}`,
+    `--user-data-dir=${opts.userDataDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    ...(opts.interactive && opts.freshSession !== false ? ["--incognito"] : []),
+    ...(opts.interactive ? [] : ["--window-position=-32000,-32000"]),
+    "--window-size=1280,800",
+    opts.interactive ? FIREFLY_HOME_URL : "about:blank",
+  ];
+}
+
 /**
  * Launch system Chrome/Edge at firefly.adobe.com, intercept firefly-3p
  * Authorization Bearer via CDP, return JWT + useful cookies.
@@ -498,6 +654,8 @@ function killProcessTree(child: ChildProcess | null): void {
 async function runAdobeFireflyCdpBrowser(opts: {
   timeoutMs: number;
   interactive: boolean;
+  sessionKey: string;
+  freshSession?: boolean;
   seedCookie?: string;
   accessToken?: string;
   log?: AdobeFireflyBrowserLog;
@@ -515,18 +673,15 @@ async function runAdobeFireflyCdpBrowser(opts: {
 
   let child: ChildProcess | null = null;
   try {
-    const userDataDir = resolveAdobeFireflyBrowserProfileDir();
+    const userDataDir = resolveAdobeFireflyBrowserProfileDir(opts.sessionKey);
     const port = await getFreeLoopbackPort();
 
-    const args = [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${userDataDir}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      ...(opts.interactive ? [] : ["--window-position=-32000,-32000"]),
-      "--window-size=1280,800",
-      FIREFLY_HOME_URL,
-    ];
+    const args = buildAdobeFireflyBrowserArgs({
+      port,
+      userDataDir,
+      interactive: opts.interactive,
+      freshSession: opts.freshSession,
+    });
 
     child = spawn(browserPath, args, {
       stdio: "ignore",
@@ -558,13 +713,18 @@ async function runAdobeFireflyCdpBrowser(opts: {
         timeoutMs: opts.timeoutMs,
         fallbackAccessToken: opts.accessToken,
         seedCookie: opts.seedCookie,
+        seedBrowserCookies:
+          opts.interactive && opts.freshSession !== false
+            ? []
+            : loadAdobeBrowserCookies(opts.sessionKey),
         waitForRiskRefresh: !opts.interactive,
       }),
       earlyExit,
     ]);
 
     const cookie = buildAdobeFireflyCookieHeader(captured.cookies);
-    const account = accountLabelFromAdobeJwt(captured.accessToken);
+    saveAdobeBrowserCookies(opts.sessionKey, captured.cookies);
+    const account = await resolveAdobeAccountLabel(captured.accessToken);
     opts.log?.info?.(
       "ADOBE-FIREFLY",
       `CDP ${opts.interactive ? "sign-in" : "refresh"} captured durable session ` +
@@ -591,12 +751,15 @@ async function runAdobeFireflyCdpBrowser(opts: {
 }
 
 export async function startAdobeFireflyBrowserLogin(
-  requestedTimeout?: unknown
+  requestedTimeout?: unknown,
+  opts?: { sessionKey?: string; freshSession?: boolean }
 ): Promise<AdobeFireflyBrowserLoginResult> {
   const run = cdpBrowserChain.then(() =>
     runAdobeFireflyCdpBrowser({
       timeoutMs: clampAdobeFireflyLoginTimeout(requestedTimeout),
       interactive: true,
+      sessionKey: String(opts?.sessionKey || "legacy-default"),
+      freshSession: opts?.freshSession !== false,
     })
   );
   cdpBrowserChain = run.then(
@@ -612,11 +775,13 @@ export async function refreshAdobeFireflyViaCdp(opts: {
   accessToken?: string;
   timeoutMs?: number;
   log?: AdobeFireflyBrowserLog;
+  sessionKey?: string;
 }): Promise<AdobeFireflyCdpRefreshResult | null> {
   const run = cdpBrowserChain.then(async () => {
     const result = await runAdobeFireflyCdpBrowser({
       timeoutMs: Math.max(15_000, Math.min(120_000, Number(opts.timeoutMs) || 75_000)),
       interactive: false,
+      sessionKey: String(opts.sessionKey || "legacy-default"),
       seedCookie: opts.cookie,
       accessToken: opts.accessToken,
       log: opts.log,

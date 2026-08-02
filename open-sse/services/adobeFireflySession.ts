@@ -38,6 +38,8 @@ export interface AdobeFireflySession {
   updatedAt: number;
   /** Hash of the original credential paste (cache key). */
   fingerprint: string;
+  /** Stable provider connection id used to isolate browser SSO/cookie state per Adobe account. */
+  browserSessionKey?: string;
   source: "paste" | "ims" | "browser" | "cache" | "rebuild";
 }
 
@@ -45,10 +47,12 @@ export interface AdobeFireflySessionResolveOpts {
   credentials?: {
     apiKey?: string;
     accessToken?: string;
+    connectionId?: string;
     providerSpecificData?: {
       cookie?: unknown;
       access_token?: unknown;
       accessToken?: unknown;
+      browserSessionKey?: unknown;
     } | null;
   } | null;
   /** Force browser / cookie ARP rebuild (e.g. after HTTP 408). */
@@ -490,6 +494,7 @@ export async function refreshAdobeSessionViaBrowser(
       accessToken: session.accessToken,
       log,
       timeoutMs: force ? 90_000 : 75_000,
+      sessionKey: session.browserSessionKey,
     });
     if (!warmed) return null;
 
@@ -551,6 +556,12 @@ export async function ensureAdobeFireflySession(
 
   const joined = blobs.join("\n");
   const fingerprint = fingerprintAdobeCredential(joined);
+  const browserSessionKey =
+    String(
+      opts.credentials?.connectionId ||
+        opts.credentials?.providerSpecificData?.browserSessionKey ||
+        fingerprint
+    ).trim() || fingerprint;
 
   // forceRefresh / rotate always drop in-memory cache for this fingerprint
   if (opts.forceRefresh) sessionCache.delete(fingerprint);
@@ -668,6 +679,7 @@ export async function ensureAdobeFireflySession(
     tokenExpiresAt: estimateAdobeTokenExpiry(accessToken),
     updatedAt: Date.now(),
     fingerprint,
+    browserSessionKey,
     source: workingFresh ? "cache" : cached?.source || "paste",
   };
 

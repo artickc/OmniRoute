@@ -5,10 +5,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  adobeFireflyBrowserSessionKey,
   accountLabelFromAdobeJwt,
+  buildAdobeFireflyBrowserArgs,
   buildAdobeFireflyCookieHeader,
   clampAdobeFireflyLoginTimeout,
   extractAdobeBearerTokenFromAuthorization,
+  filterAdobeBrowserCookies,
+  resolveAdobeAccountLabel,
   resolveSystemBrowserExecutable,
 } from "../../open-sse/services/adobeFireflyBrowserLogin.ts";
 
@@ -55,6 +59,72 @@ test("accountLabelFromAdobeJwt prefers email", () => {
   const jwt = `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
   assert.equal(accountLabelFromAdobeJwt(jwt), "a@b.com");
   assert.equal(accountLabelFromAdobeJwt("not-a-jwt"), "");
+});
+
+test("accountLabelFromAdobeJwt never exposes opaque Adobe IDs", () => {
+  const payload = Buffer.from(
+    JSON.stringify({ user_id: "0123456789ABCDEF@AdobeID", sub: "opaque-subject" })
+  ).toString("base64url");
+  assert.equal(accountLabelFromAdobeJwt(`eyJhbGciOiJIUzI1NiJ9.${payload}.sig`), "");
+});
+
+test("resolveAdobeAccountLabel uses IMS display name and generic fallback", async () => {
+  const payload = Buffer.from(
+    JSON.stringify({ client_id: "clio-playground-web", user_id: "opaque@AdobeID" })
+  ).toString("base64url");
+  const jwt = `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
+  const displayName = await resolveAdobeAccountLabel(
+    jwt,
+    (async () =>
+      new Response(JSON.stringify({ name: "Friendly Name", sub: "opaque@AdobeID" }), {
+        status: 200,
+      })) as typeof fetch
+  );
+  assert.equal(displayName, "Friendly Name");
+
+  const fallback = await resolveAdobeAccountLabel(
+    jwt,
+    (async () => new Response("unavailable", { status: 503 })) as typeof fetch
+  );
+  assert.equal(fallback, "Adobe account");
+});
+
+test("browser args isolate profiles and make fresh interactive login incognito", () => {
+  const firstKey = adobeFireflyBrowserSessionKey("connection-a");
+  const secondKey = adobeFireflyBrowserSessionKey("connection-b");
+  assert.equal(firstKey, adobeFireflyBrowserSessionKey("connection-a"));
+  assert.notEqual(firstKey, secondKey);
+
+  const interactive = buildAdobeFireflyBrowserArgs({
+    port: 9222,
+    userDataDir: `C:\\profiles\\${firstKey}`,
+    interactive: true,
+    freshSession: true,
+  });
+  assert.ok(interactive.includes("--incognito"));
+  assert.ok(interactive.includes(`--user-data-dir=C:\\profiles\\${firstKey}`));
+  assert.equal(interactive.at(-1), "https://firefly.adobe.com/");
+
+  const background = buildAdobeFireflyBrowserArgs({
+    port: 9223,
+    userDataDir: `C:\\profiles\\${secondKey}`,
+    interactive: false,
+  });
+  assert.equal(background.includes("--incognito"), false);
+  assert.equal(background.at(-1), "about:blank");
+});
+
+test("filterAdobeBrowserCookies keeps Adobe SSO domains only", () => {
+  assert.deepEqual(
+    filterAdobeBrowserCookies([
+      { name: "ims", value: "one", domain: ".adobelogin.com", secure: true },
+      { name: "firefly", value: "two", domain: "firefly.adobe.com" },
+      { name: "service", value: "three", domain: "firefly-3p.ff.adobe.io" },
+      { name: "unrelated", value: "secret", domain: ".example.com" },
+      { name: "bad", value: "line\nbreak", domain: ".adobe.com" },
+    ]).map((cookie) => cookie.name),
+    ["ims", "firefly", "service"]
+  );
 });
 
 test("resolveSystemBrowserExecutable finds Chrome or Edge on this host (or honors env)", () => {
