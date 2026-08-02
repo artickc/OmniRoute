@@ -13,9 +13,8 @@
  * Protocol over WebSocket — zero Playwright dependency.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeErrorMessage } from "../utils/error.ts";
 
@@ -34,9 +33,38 @@ const CDP_READY_TIMEOUT_MS = 30_000;
 export interface AdobeFireflyBrowserLoginResult {
   success: boolean;
   credentials?: { accessToken?: string; cookie?: string };
+  arpSessionId?: string;
   /** Best-effort Adobe account label (email or user id) decoded from the JWT. */
   account?: string;
   error?: string;
+}
+
+export interface AdobeFireflyCdpRefreshResult {
+  accessToken: string;
+  cookie: string;
+  arpSessionId: string;
+}
+
+type AdobeFireflyBrowserLog = {
+  info?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+};
+
+let cdpBrowserChain: Promise<void> = Promise.resolve();
+
+/**
+ * A non-default profile is required by Chrome 136+ for remote debugging. Keep this profile
+ * durable: Adobe IMS SSO lives here and is what lets a background warm mint the next user JWT.
+ */
+export function resolveAdobeFireflyBrowserProfileDir(): string {
+  const dataRoot =
+    String(process.env.DATA_DIR || process.env.OMNIROUTE_DATA_DIR || "").trim() ||
+    (process.env.LOCALAPPDATA
+      ? join(process.env.LOCALAPPDATA, "OmniRoute")
+      : join(process.cwd(), ".data"));
+  const profile = join(dataRoot, "adobe-chrome-profile");
+  mkdirSync(profile, { recursive: true });
+  return profile;
 }
 
 export function clampAdobeFireflyLoginTimeout(value: unknown): number {
@@ -54,7 +82,15 @@ export function extractAdobeBearerTokenFromAuthorization(authHeader: string): st
 export function buildAdobeFireflyCookieHeader(
   cookies: Array<{ name: string; value: string; domain?: string }>
 ): string {
-  const wanted = ["sherlockToken", "forterToken", "aux_sid", "ff_session_guid"];
+  const wanted = [
+    "sherlockToken",
+    "forterToken",
+    "arkose",
+    "ff_session_guid",
+    "aux_sid",
+    "bfp",
+    "fpjs",
+  ];
   const parts: string[] = [];
   for (const wantedName of wanted) {
     const c = cookies.find(
@@ -161,6 +197,23 @@ async function waitForCdpReady(
 
 type CdpCookie = { name: string; value: string; domain?: string };
 
+function parseCookieHeader(cookieHeader: string): Array<{ name: string; value: string }> {
+  const cookies: Array<{ name: string; value: string }> = [];
+  for (const part of String(cookieHeader || "").split(";")) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!name || !value || /[\r\n\0]/.test(name + value)) continue;
+    cookies.push({ name, value });
+  }
+  return cookies;
+}
+
+function cookieValue(cookies: CdpCookie[], name: string): string {
+  return cookies.find((cookie) => cookie.name.toLowerCase() === name.toLowerCase())?.value || "";
+}
+
 class CdpSocket {
   private ws: WebSocket;
   private nextId = 1;
@@ -249,14 +302,27 @@ async function captureViaCdp(opts: {
   port: number;
   browserWsUrl: string;
   timeoutMs: number;
-}): Promise<{ accessToken: string; cookies: CdpCookie[] }> {
+  fallbackAccessToken?: string;
+  seedCookie?: string;
+  waitForRiskRefresh?: boolean;
+}): Promise<{
+  accessToken: string;
+  cookies: CdpCookie[];
+  arpSessionId: string;
+}> {
   let capturedAccessToken = "";
+  let capturedArpSessionId = "";
+  let latestCookies: CdpCookie[] = [];
   const pageSockets = new Map<string, CdpSocket>();
   let browserCdp: CdpSocket | null = null;
+  const initialForter =
+    parseCookieHeader(opts.seedCookie || "").find(
+      (cookie) => cookie.name.toLowerCase() === "fortertoken"
+    )?.value || "";
+  const startedAt = Date.now();
 
   const onEvent = (method: string, params: Record<string, unknown>) => {
     if (method === "Network.requestWillBeSent") {
-      if (capturedAccessToken) return;
       const request = params.request as
         { url?: string; headers?: Record<string, string> } | undefined;
       if (!request?.url || !request.url.includes(FIREFLY_3P_HOST_SUFFIX)) return;
@@ -264,6 +330,12 @@ async function captureViaCdp(opts: {
       const auth = headers.Authorization || headers.authorization || headers.AUTHORIZATION || "";
       const token = extractAdobeBearerTokenFromAuthorization(auth);
       if (token) capturedAccessToken = token;
+      const arp =
+        headers["x-arp-session-id"] ||
+        headers["X-Arp-Session-Id"] ||
+        headers["X-ARP-SESSION-ID"] ||
+        "";
+      if (typeof arp === "string" && arp.trim()) capturedArpSessionId = arp.trim();
     } else if (method === "Target.attachedToTarget") {
       const sessionId = String(params.sessionId || "");
       const targetInfo = params.targetInfo as { type?: string; targetId?: string } | undefined;
@@ -276,6 +348,20 @@ async function captureViaCdp(opts: {
   try {
     const browserWs = await openCdp(opts.browserWsUrl);
     browserCdp = new CdpSocket(browserWs, onEvent);
+    const seed = parseCookieHeader(opts.seedCookie || "");
+    if (seed.length > 0) {
+      await browserCdp
+        .send("Storage.setCookies", {
+          cookies: seed.map(({ name, value }) => ({
+            name,
+            value,
+            url: FIREFLY_HOME_URL,
+            path: "/",
+            secure: true,
+          })),
+        })
+        .catch(() => undefined);
+    }
     await browserCdp.send("Target.setDiscoverTargets", { discover: true }).catch(() => undefined);
     await browserCdp
       .send("Target.setAutoAttach", {
@@ -305,7 +391,12 @@ async function captureViaCdp(opts: {
             const cdp = new CdpSocket(ws, onEvent);
             pageSockets.set(t.id, cdp);
             await cdp.send("Network.enable");
-            if (!t.url || t.url === "about:blank" || t.url.startsWith("chrome://")) {
+            if (
+              seed.length > 0 ||
+              !t.url ||
+              t.url === "about:blank" ||
+              t.url.startsWith("chrome://")
+            ) {
               await cdp.send("Page.enable").catch(() => undefined);
               await cdp.send("Page.navigate", { url: FIREFLY_HOME_URL }).catch(() => undefined);
             }
@@ -317,28 +408,52 @@ async function captureViaCdp(opts: {
         // list may fail briefly while Chrome starts
       }
 
-      if (capturedAccessToken) {
-        // Prefer cookies from any live page socket; fall back to empty.
-        for (const cdp of pageSockets.values()) {
-          if (!cdp.open) continue;
-          try {
-            const result = (await cdp.send("Network.getAllCookies")) as {
-              cookies?: CdpCookie[];
-            };
-            return {
-              accessToken: capturedAccessToken,
-              cookies: Array.isArray(result?.cookies) ? result.cookies : [],
-            };
-          } catch {
-            /* try next */
-          }
+      try {
+        const result = (await browserCdp.send("Storage.getCookies")) as {
+          cookies?: CdpCookie[];
+        };
+        if (Array.isArray(result?.cookies)) latestCookies = result.cookies;
+      } catch {
+        /* retry while Chrome is settling */
+      }
+
+      const accessToken = capturedAccessToken || String(opts.fallbackAccessToken || "").trim();
+      if (accessToken) {
+        if (!opts.waitForRiskRefresh) {
+          return {
+            accessToken,
+            cookies: latestCookies,
+            arpSessionId: capturedArpSessionId,
+          };
         }
-        return { accessToken: capturedAccessToken, cookies: [] };
+        const elapsed = Date.now() - startedAt;
+        const forter = cookieValue(latestCookies, "forterToken");
+        const hasRiskCookies = Boolean(
+          forter &&
+          cookieValue(latestCookies, "ff_session_guid") &&
+          (cookieValue(latestCookies, "arkose") || cookieValue(latestCookies, "sherlockToken"))
+        );
+        const riskAdvanced = Boolean(forter && initialForter && forter !== initialForter);
+        if (hasRiskCookies && elapsed >= 8_000 && (riskAdvanced || elapsed >= 30_000)) {
+          return {
+            accessToken,
+            cookies: latestCookies,
+            arpSessionId: capturedArpSessionId,
+          };
+        }
       }
 
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
 
+    const fallback = String(opts.fallbackAccessToken || "").trim();
+    if (fallback && latestCookies.length > 0) {
+      return {
+        accessToken: capturedAccessToken || fallback,
+        cookies: latestCookies,
+        arpSessionId: capturedArpSessionId,
+      };
+    }
     throw new Error(
       "Adobe Firefly sign-in timed out. Complete sign-in at firefly.adobe.com and trigger an action " +
         "(open Generate) so the browser sends the Firefly request, then try again."
@@ -380,10 +495,13 @@ function killProcessTree(child: ChildProcess | null): void {
  * Launch system Chrome/Edge at firefly.adobe.com, intercept firefly-3p
  * Authorization Bearer via CDP, return JWT + useful cookies.
  */
-export async function startAdobeFireflyBrowserLogin(
-  requestedTimeout?: unknown
-): Promise<AdobeFireflyBrowserLoginResult> {
-  const timeout = clampAdobeFireflyLoginTimeout(requestedTimeout);
+async function runAdobeFireflyCdpBrowser(opts: {
+  timeoutMs: number;
+  interactive: boolean;
+  seedCookie?: string;
+  accessToken?: string;
+  log?: AdobeFireflyBrowserLog;
+}): Promise<AdobeFireflyBrowserLoginResult> {
   const browserPath = resolveSystemBrowserExecutable();
   if (!browserPath) {
     return {
@@ -395,10 +513,9 @@ export async function startAdobeFireflyBrowserLogin(
     };
   }
 
-  let userDataDir: string | null = null;
   let child: ChildProcess | null = null;
   try {
-    userDataDir = mkdtempSync(join(tmpdir(), "omniroute-firefly-login-"));
+    const userDataDir = resolveAdobeFireflyBrowserProfileDir();
     const port = await getFreeLoopbackPort();
 
     const args = [
@@ -406,15 +523,14 @@ export async function startAdobeFireflyBrowserLogin(
       `--user-data-dir=${userDataDir}`,
       "--no-first-run",
       "--no-default-browser-check",
-      "--disable-sync",
-      "--disable-background-networking",
+      ...(opts.interactive ? [] : ["--window-position=-32000,-32000"]),
       "--window-size=1280,800",
       FIREFLY_HOME_URL,
     ];
 
     child = spawn(browserPath, args, {
       stdio: "ignore",
-      windowsHide: false,
+      windowsHide: !opts.interactive,
       detached: false,
     });
 
@@ -439,19 +555,28 @@ export async function startAdobeFireflyBrowserLogin(
       captureViaCdp({
         port,
         browserWsUrl: webSocketDebuggerUrl,
-        timeoutMs: timeout,
+        timeoutMs: opts.timeoutMs,
+        fallbackAccessToken: opts.accessToken,
+        seedCookie: opts.seedCookie,
+        waitForRiskRefresh: !opts.interactive,
       }),
       earlyExit,
     ]);
 
     const cookie = buildAdobeFireflyCookieHeader(captured.cookies);
     const account = accountLabelFromAdobeJwt(captured.accessToken);
+    opts.log?.info?.(
+      "ADOBE-FIREFLY",
+      `CDP ${opts.interactive ? "sign-in" : "refresh"} captured durable session ` +
+        `(cookieCount=${captured.cookies.length}, arpLen=${captured.arpSessionId.length})`
+    );
     return {
       success: true,
       credentials: {
         accessToken: captured.accessToken,
         ...(cookie ? { cookie } : {}),
       },
+      ...(captured.arpSessionId ? { arpSessionId: captured.arpSessionId } : {}),
       ...(account ? { account } : {}),
     };
   } catch (error) {
@@ -462,14 +587,60 @@ export async function startAdobeFireflyBrowserLogin(
   } finally {
     killProcessTree(child);
     child = null;
-    if (userDataDir) {
-      // Give Chrome a moment to release the profile directory.
-      await new Promise((r) => setTimeout(r, 300));
-      try {
-        rmSync(userDataDir, { recursive: true, force: true });
-      } catch {
-        // Profile may still be locked; temp cleaner will reclaim later.
-      }
-    }
+  }
+}
+
+export async function startAdobeFireflyBrowserLogin(
+  requestedTimeout?: unknown
+): Promise<AdobeFireflyBrowserLoginResult> {
+  const run = cdpBrowserChain.then(() =>
+    runAdobeFireflyCdpBrowser({
+      timeoutMs: clampAdobeFireflyLoginTimeout(requestedTimeout),
+      interactive: true,
+    })
+  );
+  cdpBrowserChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/** Packaged-safe background renewal. Reuses the durable sign-in profile; never imports Playwright. */
+export async function refreshAdobeFireflyViaCdp(opts: {
+  cookie?: string;
+  accessToken?: string;
+  timeoutMs?: number;
+  log?: AdobeFireflyBrowserLog;
+}): Promise<AdobeFireflyCdpRefreshResult | null> {
+  const run = cdpBrowserChain.then(async () => {
+    const result = await runAdobeFireflyCdpBrowser({
+      timeoutMs: Math.max(15_000, Math.min(120_000, Number(opts.timeoutMs) || 75_000)),
+      interactive: false,
+      seedCookie: opts.cookie,
+      accessToken: opts.accessToken,
+      log: opts.log,
+    });
+    const accessToken = String(result.credentials?.accessToken || "").trim();
+    const cookie = String(result.credentials?.cookie || "").trim();
+    if (!result.success || !accessToken || !cookie) return null;
+    return {
+      accessToken,
+      cookie,
+      arpSessionId: String(result.arpSessionId || "").trim(),
+    };
+  });
+  cdpBrowserChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  try {
+    return await run;
+  } catch (error) {
+    opts.log?.warn?.(
+      "ADOBE-FIREFLY",
+      `CDP background refresh failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return null;
   }
 }

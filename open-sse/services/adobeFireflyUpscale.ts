@@ -122,10 +122,16 @@ export function resolveAdobeUpscaleModel(model: string): {
 
   // Accept the upstream version names and common spellings.
   if (raw.includes("bloom") || raw.includes("reimagine")) {
-    return { id: "topaz-bloom", spec: ADOBE_FIREFLY_UPSCALE_MODELS["topaz-bloom"] };
+    return {
+      id: "topaz-bloom",
+      spec: ADOBE_FIREFLY_UPSCALE_MODELS["topaz-bloom"],
+    };
   }
   if (raw.includes("topaz")) {
-    return { id: "topaz-standard", spec: ADOBE_FIREFLY_UPSCALE_MODELS["topaz-standard"] };
+    return {
+      id: "topaz-standard",
+      spec: ADOBE_FIREFLY_UPSCALE_MODELS["topaz-standard"],
+    };
   }
   return null;
 }
@@ -156,9 +162,10 @@ export function resolveAdobeCreativityLevel(opts: {
     return clampLevel(normalizeExplicitCreativity(Number(explicit)));
   }
 
-  const percent = typeof opts.creativityPercent === "number" && Number.isFinite(opts.creativityPercent)
-    ? Math.max(0, Math.min(100, opts.creativityPercent))
-    : 0;
+  const percent =
+    typeof opts.creativityPercent === "number" && Number.isFinite(opts.creativityPercent)
+      ? Math.max(0, Math.min(100, opts.creativityPercent))
+      : 0;
   return clampLevel(percent / 100);
 }
 
@@ -249,8 +256,16 @@ export async function adobeFireflyUpscaleImage(opts: {
   sessionFingerprint?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
-  log?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
-}): Promise<{ url: string; latest: unknown; factor: number; creativityLevel: number }> {
+  log?: {
+    info?: (...args: unknown[]) => void;
+    error?: (...args: unknown[]) => void;
+  };
+}): Promise<{
+  url: string;
+  latest: unknown;
+  factor: number;
+  creativityLevel: number;
+}> {
   const fetchImpl = opts.fetchImpl || fetch;
   const resolved = resolveAdobeUpscaleModel(opts.model);
   if (!resolved) {
@@ -265,11 +280,7 @@ export async function adobeFireflyUpscaleImage(opts: {
 
   const blobId = String(opts.blobId || "").trim();
   if (!blobId) {
-    throw new AdobeFireflyError(
-      "Adobe Firefly upscale requires a source image",
-      400,
-      "bad_image"
-    );
+    throw new AdobeFireflyError("Adobe Firefly upscale requires a source image", 400, "bad_image");
   }
 
   const factor = normalizeFactor(opts.upsamplerFactor, spec.factors);
@@ -288,26 +299,37 @@ export async function adobeFireflyUpscaleImage(opts: {
   });
 
   const sessionCookie = String(opts.sessionCookie || "").trim();
-  const cookieHeader = extractAdobeCookieHeader(sessionCookie);
-  const browserArp = extractAdobeArpSessionId(cookieHeader || sessionCookie);
+  let activeCookie = extractAdobeCookieHeader(sessionCookie) || sessionCookie;
+  const browserArp = extractAdobeArpSessionId(activeCookie);
   const hadBrowserArp = Boolean(browserArp);
   let arpSessionId =
     (opts.arpSessionId && String(opts.arpSessionId).trim()) ||
     browserArp ||
     buildAdobeArpSessionId();
-  const accessToken = opts.accessToken;
+  let accessToken = opts.accessToken;
+  let authRefreshAttempted = false;
   let submitData: unknown = {};
   let submitHeaders: Headers | Record<string, string | null | undefined> = new Headers();
   let lastSubmitError = "";
   let sawSystemUnderLoad = false;
   let submitted = false;
 
+  const {
+    estimateAdobeTokenExpiry,
+    fingerprintAdobeCredential,
+    markAdobeFireflyArpSuccess,
+    rotateAdobeFireflySessionOnError,
+  } = await import("./adobeFireflySession.ts");
+  const fingerprint =
+    String(opts.sessionFingerprint || "").trim() ||
+    fingerprintAdobeCredential([accessToken, activeCookie].filter(Boolean).join("\n"));
+
   for (let attempt = 1; attempt <= SUBMIT_MAX_ATTEMPTS; attempt++) {
     const submitResp = await fetchImpl(ADOBE_FIREFLY_IMAGE_UPSAMPLE_URL, {
       method: "POST",
       headers: buildAdobeUpsampleHeaders(accessToken, {
         arpSessionId,
-        cookie: cookieHeader || undefined,
+        cookie: activeCookie || undefined,
       }),
       body: JSON.stringify(payload),
     });
@@ -320,9 +342,30 @@ export async function adobeFireflyUpscaleImage(opts: {
           "quota_exhausted"
         );
       }
+      if (!authRefreshAttempted && attempt < SUBMIT_MAX_ATTEMPTS) {
+        authRefreshAttempted = true;
+        const refreshed = await rotateAdobeFireflySessionOnError(
+          {
+            accessToken,
+            cookie: activeCookie,
+            arpSessionId,
+            tokenExpiresAt: estimateAdobeTokenExpiry(accessToken),
+            updatedAt: Date.now(),
+            fingerprint,
+            source: "rebuild",
+          },
+          { attempt, authFailure: true, tryBrowser: true, log: opts.log }
+        ).catch(() => null);
+        if (refreshed?.accessToken && refreshed.arpSessionId) {
+          accessToken = refreshed.accessToken;
+          activeCookie = refreshed.cookie || activeCookie;
+          arpSessionId = refreshed.arpSessionId;
+          continue;
+        }
+      }
       throw new AdobeFireflyError(
-        "Adobe Firefly token invalid or expired. Paste a fresh IMS JWT (Authorization: Bearer on " +
-          "firefly-3p) plus the firefly.adobe.com Cookie once.",
+        "Adobe Firefly session is no longer authenticated and automatic browser renewal failed. " +
+          "Sign in once through the Adobe Firefly browser login to restore durable renewal.",
         401,
         "auth"
       );
@@ -336,8 +379,23 @@ export async function adobeFireflyUpscaleImage(opts: {
         sanitizeErrorMessage(text.slice(0, 300));
 
       if (isAdobeTransientSubmitError(submitResp.status, text) && attempt < SUBMIT_MAX_ATTEMPTS) {
-        // Rotate synthetic ARP on transient 408; real browser ARP is reused as-is.
-        if (!hadBrowserArp) {
+        const refreshed = await rotateAdobeFireflySessionOnError(
+          {
+            accessToken,
+            cookie: activeCookie,
+            arpSessionId,
+            tokenExpiresAt: estimateAdobeTokenExpiry(accessToken),
+            updatedAt: Date.now(),
+            fingerprint,
+            source: "rebuild",
+          },
+          { attempt, tryBrowser: true, log: opts.log }
+        ).catch(() => null);
+        if (refreshed?.arpSessionId) {
+          accessToken = refreshed.accessToken || accessToken;
+          activeCookie = refreshed.cookie || activeCookie;
+          arpSessionId = refreshed.arpSessionId;
+        } else if (!hadBrowserArp) {
           arpSessionId = buildAdobeArpSessionId();
         }
         const delay = submitRetryDelayMs(attempt);
@@ -364,6 +422,7 @@ export async function adobeFireflyUpscaleImage(opts: {
 
     submitData = await submitResp.json().catch(() => ({}));
     submitHeaders = submitResp.headers;
+    markAdobeFireflyArpSuccess(fingerprint, arpSessionId);
     submitted = true;
     break;
   }

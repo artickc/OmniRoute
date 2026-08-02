@@ -9,9 +9,9 @@
 
 import {
   AdobeFireflyError,
-  resolveAdobeAccessToken,
   resolveAdobeSourceImageIds,
 } from "../../services/adobeFireflyClient.ts";
+import { ensureAdobeFireflySession } from "../../services/adobeFireflySession.ts";
 import {
   adobeFireflyUpscaleImage,
   resolveAdobeUpscaleModel,
@@ -65,15 +65,14 @@ export async function handleAdobeFireflyImageUpscale({
   }
 
   try {
-    const accessToken = await resolveAdobeAccessToken(credentials, fetchImpl);
-    // Keep the raw credential blob for Cookie + sherlockToken (x-arp-session-id).
-    const psd = (credentials as { providerSpecificData?: { cookie?: string } })?.providerSpecificData;
-    const sessionCookie =
-      (typeof psd?.cookie === "string" && psd.cookie.trim()) ||
-      (typeof credentials?.apiKey === "string" && credentials.apiKey.trim()) ||
-      (typeof credentials?.accessToken === "string" && credentials.accessToken.includes(";")
-        ? credentials.accessToken
-        : undefined);
+    const session = await ensureAdobeFireflySession({
+      credentials,
+      fetchImpl,
+      log,
+    });
+    const accessToken = session.accessToken;
+    const sessionCookie = session.cookie || undefined;
+    const arpSessionId = session.arpSessionId;
 
     // Upscale consumes exactly one source; upload it under the same ARP as submit.
     const blobIds = await resolveAdobeSourceImageIds({
@@ -81,6 +80,7 @@ export async function handleAdobeFireflyImageUpscale({
       body,
       max: 1,
       sessionCookie,
+      arpSessionId,
       prompt: "upsample",
       fetchImpl,
       log,
@@ -105,6 +105,8 @@ export async function handleAdobeFireflyImageUpscale({
       creativityPercent: readCreativityPercent(body),
       creativityLevel: body.creativity_level ?? body.creativityLevel,
       sessionCookie,
+      arpSessionId,
+      sessionFingerprint: session.fingerprint,
       ...(timeoutMs > 0 ? { timeoutMs } : {}),
       fetchImpl,
       log,
@@ -130,7 +132,10 @@ export async function handleAdobeFireflyImageUpscale({
     });
   } catch (err) {
     if (err instanceof AdobeFireflyError) {
-      log?.error?.("IMAGE", `${provider} adobe-firefly upscale error ${err.status}: ${err.message}`);
+      log?.error?.(
+        "IMAGE",
+        `${provider} adobe-firefly upscale error ${err.status}: ${err.message}`
+      );
       return saveUpscaleErrorResult({
         provider,
         model,

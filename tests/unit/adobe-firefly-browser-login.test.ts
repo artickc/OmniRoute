@@ -35,10 +35,16 @@ test("buildAdobeFireflyCookieHeader keeps only wanted pairs", () => {
     { name: "unrelated", value: "x" },
     { name: "sherlockToken", value: "s1" },
     { name: "forterToken", value: "f1" },
+    { name: "arkose", value: "a1" },
     { name: "bad", value: "a;b" },
     { name: "ff_session_guid", value: "g1" },
+    { name: "bfp", value: "b1" },
+    { name: "fpjs", value: "j1" },
   ]);
-  assert.equal(header, "sherlockToken=s1; forterToken=f1; ff_session_guid=g1");
+  assert.equal(
+    header,
+    "sherlockToken=s1; forterToken=f1; arkose=a1; ff_session_guid=g1; bfp=b1; fpjs=j1"
+  );
   assert.equal(buildAdobeFireflyCookieHeader([]), "");
 });
 

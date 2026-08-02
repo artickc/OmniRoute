@@ -8,8 +8,8 @@
  *  2) Rebuild x-arp-session-id from cookie pieces (ff_session_guid + arkose + forterToken)
  *     or pasted sherlockToken — never launch Chrome by default
  *  3) Sticky working ARP across batch jobs + submit spacing (colligo rate-limit defense)
- *  4) Optional Chrome warm ONLY when ADOBE_FIREFLY_BROWSER_REFRESH=1 (or mid-batch 408 recovery).
- *     Default Chrome mode is **off-screen headed** (Forter-safe). Headless is opt-in and often rejected.
+ *  4) Packaged-safe Chrome/CDP warm on stale risk state, JWT expiry, or 408 recovery.
+ *     The durable browser profile holds Adobe SSO; Playwright is not required.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -45,15 +45,22 @@ export interface AdobeFireflySessionResolveOpts {
   credentials?: {
     apiKey?: string;
     accessToken?: string;
-    providerSpecificData?: { cookie?: unknown; access_token?: unknown; accessToken?: unknown } | null;
+    providerSpecificData?: {
+      cookie?: unknown;
+      access_token?: unknown;
+      accessToken?: unknown;
+    } | null;
   } | null;
   /** Force browser / cookie ARP rebuild (e.g. after HTTP 408). */
   forceRefresh?: boolean;
   /** Prefer minting a brand-new ARP (retry path). */
   rotateArp?: boolean;
   fetchImpl?: typeof fetch;
-  log?: { info?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void };
-  /** Disable Playwright refresh (tests / hosts without browsers). */
+  log?: {
+    info?: (...args: unknown[]) => void;
+    warn?: (...args: unknown[]) => void;
+  };
+  /** Disable durable CDP refresh (tests / hosts without Chrome or Edge). */
   allowBrowserRefresh?: boolean;
 }
 
@@ -77,19 +84,27 @@ let consecutiveAdobeSubmitSuccesses = 0;
 
 /** Minimum gap between generate-async submits (ms). Prevents batch thrashing → 408. */
 function minSubmitGapMs(): number {
-  if (process.env.ADOBE_FIREFLY_MIN_SUBMIT_GAP_MS != null && process.env.ADOBE_FIREFLY_MIN_SUBMIT_GAP_MS !== "") {
+  if (
+    process.env.ADOBE_FIREFLY_MIN_SUBMIT_GAP_MS != null &&
+    process.env.ADOBE_FIREFLY_MIN_SUBMIT_GAP_MS !== ""
+  ) {
     return Math.max(0, Number(process.env.ADOBE_FIREFLY_MIN_SUBMIT_GAP_MS) || 0);
   }
   // Unit tests must not serialize multi-second gaps between cases that share the process-global gate.
-  if (process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT) return 0;
+  if (process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT)
+    return 0;
   // Live colligo rejects thrash after a few generates even with sticky ARP — 12s default.
   return 12_000;
 }
 
 /** Extra gap after every N successful submits (mid-batch death defense). */
 function batchExtraGapMs(): number {
-  if (process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT) return 0;
-  if (consecutiveAdobeSubmitSuccesses > 0 && consecutiveAdobeSubmitSuccesses % BATCH_SUCCESS_COOLDOWN_EVERY === 0) {
+  if (process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT)
+    return 0;
+  if (
+    consecutiveAdobeSubmitSuccesses > 0 &&
+    consecutiveAdobeSubmitSuccesses % BATCH_SUCCESS_COOLDOWN_EVERY === 0
+  ) {
     return Number(process.env.ADOBE_FIREFLY_BATCH_EXTRA_GAP_MS || BATCH_SUCCESS_EXTRA_GAP_MS);
   }
   return 0;
@@ -133,14 +148,20 @@ function sessionFilePath(fingerprint: string): string {
 }
 
 export function fingerprintAdobeCredential(raw: string): string {
-  return createHash("sha256").update(String(raw || "").trim()).digest("hex").slice(0, 32);
+  return createHash("sha256")
+    .update(String(raw || "").trim())
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /** Pull a single cookie value from a Cookie header / paste blob. */
 export function getAdobeCookieValue(cookieOrBlob: string, name: string): string {
   const raw = String(cookieOrBlob || "");
   if (!raw || !name) return "";
-  const re = new RegExp(`(?:^|[;\\s\\n\\r])${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}=([^;\\s\\n\\r]+)`, "i");
+  const re = new RegExp(
+    `(?:^|[;\\s\\n\\r])${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}=([^;\\s\\n\\r]+)`,
+    "i"
+  );
   const m = raw.match(re);
   if (!m?.[1]) return "";
   let v = m[1].trim().replace(/^["']|["']$/g, "");
@@ -260,9 +281,7 @@ export function buildAdobeArpSessionIdFromCookies(
   if (!blob.trim()) return "";
 
   const sid =
-    getAdobeCookieValue(blob, "ff_session_guid") ||
-    getAdobeCookieValue(blob, "sid") ||
-    "";
+    getAdobeCookieValue(blob, "ff_session_guid") || getAdobeCookieValue(blob, "sid") || "";
   const ark = getAdobeCookieValue(blob, "arkose") || "";
   const ftr =
     normalizeAdobeForterToken(getAdobeCookieValue(blob, "forterToken")) ||
@@ -317,7 +336,11 @@ export function resolveAdobeArpSessionIdSmart(
   if (rebuilt && extracted) {
     const rebuiltFtr = (() => {
       try {
-        const j = JSON.parse(Buffer.from(rebuilt + "=".repeat((4 - (rebuilt.length % 4)) % 4), "base64").toString("utf8")) as { ftr?: string };
+        const j = JSON.parse(
+          Buffer.from(rebuilt + "=".repeat((4 - (rebuilt.length % 4)) % 4), "base64").toString(
+            "utf8"
+          )
+        ) as { ftr?: string };
         return String(j.ftr || "");
       } catch {
         return "";
@@ -325,7 +348,11 @@ export function resolveAdobeArpSessionIdSmart(
     })();
     const extractedFtr = (() => {
       try {
-        const j = JSON.parse(Buffer.from(extracted + "=".repeat((4 - (extracted.length % 4)) % 4), "base64").toString("utf8")) as { ftr?: string };
+        const j = JSON.parse(
+          Buffer.from(extracted + "=".repeat((4 - (extracted.length % 4)) % 4), "base64").toString(
+            "utf8"
+          )
+        ) as { ftr?: string };
         return String(j.ftr || "");
       } catch {
         return "";
@@ -359,7 +386,10 @@ export function mergeAdobeCookieHeaders(base: string, updates: string): string {
       } catch {
         /* keep */
       }
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
         value = value.slice(1, -1);
       }
       if (/[\r\n\0]/.test(value)) continue;
@@ -372,7 +402,9 @@ export function mergeAdobeCookieHeaders(base: string, updates: string): string {
 }
 
 /** Serialize session back into a multi-line credential paste (JWT + Cookie). */
-export function serializeAdobeFireflyCredential(session: Pick<AdobeFireflySession, "accessToken" | "cookie" | "arpSessionId">): string {
+export function serializeAdobeFireflyCredential(
+  session: Pick<AdobeFireflySession, "accessToken" | "cookie" | "arpSessionId">
+): string {
   const lines: string[] = [];
   if (session.accessToken) lines.push(session.accessToken.trim());
   if (session.arpSessionId) lines.push(session.arpSessionId.trim());
@@ -438,12 +470,8 @@ function collectCredentialBlobs(
 }
 
 /**
- * Browser warm for Firefly risk session (Forter/Arkose refresh).
- *
- * - Default Chrome mode: **off-screen headed** (parked at -32000,-32000). Colligo rejects
- *   headless Forter tokens; true headless only with ADOBE_FIREFLY_CHROME_HEADLESS=1.
- * - Proactive use stays opt-in (ADOBE_FIREFLY_BROWSER_REFRESH=1).
- * - Mid-batch 408 recovery may call with force=true so we mint a new ARP without re-paste.
+ * Browser warm for Firefly risk session (Forter/Arkose + IMS JWT refresh).
+ * Uses the same persistent pure-CDP profile as interactive sign-in, including in pkg builds.
  * Never throws — returns null when unavailable.
  */
 export async function refreshAdobeSessionViaBrowser(
@@ -456,31 +484,33 @@ export async function refreshAdobeSessionViaBrowser(
   if (!adobeFireflyBrowserEnabled()) return null;
 
   try {
-    const { warmAdobeFireflyViaChrome } = await import("./adobeFireflyChromeRuntime.ts");
-    const warmed = await warmAdobeFireflyViaChrome({
+    const { refreshAdobeFireflyViaCdp } = await import("./adobeFireflyBrowserLogin.ts");
+    const warmed = await refreshAdobeFireflyViaCdp({
       cookie: session.cookie,
       accessToken: session.accessToken,
       log,
-      waitForLoginMs: 0, // never block on interactive login
-      // Default engine: warm the off-screen Chrome without requiring BROWSER_REFRESH=1.
-      allowWithoutEnvOptIn: true,
-      // Prove colligo accepts the ARP during recovery (in-page generate-async ping).
-      proveWithPing: opts?.proveWithPing ?? force,
+      timeoutMs: force ? 90_000 : 75_000,
     });
     if (!warmed) return null;
+
+    const nextCookie = mergeAdobeCookieHeaders(session.cookie, warmed.cookie || "");
+    const nextArp =
+      warmed.arpSessionId ||
+      buildAdobeArpSessionIdFromCookies(nextCookie) ||
+      extractAdobeArpSessionId(nextCookie);
+    if (!nextArp) return null;
 
     const next: AdobeFireflySession = {
       ...session,
       accessToken: warmed.accessToken || session.accessToken,
-      // Prefer warmed jar (fresh forter) over stale paste when keys collide.
-      cookie: mergeAdobeCookieHeaders(session.cookie, warmed.cookie || ""),
-      arpSessionId: warmed.arpSessionId,
-      tokenExpiresAt: warmed.tokenExpiresAt || session.tokenExpiresAt,
+      cookie: nextCookie,
+      arpSessionId: nextArp,
+      tokenExpiresAt: estimateAdobeTokenExpiry(warmed.accessToken || session.accessToken),
       updatedAt: Date.now(),
       source: "browser",
     };
     // When warm returns a fresher forter, prefer its cookie entirely for ARP rebuild pieces.
-    const warmFtr = extractAdobeForterTimestampMs(warmed.cookie || "");
+    const warmFtr = extractAdobeForterTimestampMs(nextCookie);
     const baseFtr = extractAdobeForterTimestampMs(session.cookie || "");
     if (warmFtr > baseFtr && warmed.cookie) {
       next.cookie = mergeAdobeCookieHeaders(session.cookie, warmed.cookie);
@@ -490,13 +520,13 @@ export async function refreshAdobeSessionViaBrowser(
     clearAdobeFireflyWorkingArp(session.fingerprint);
     log?.info?.(
       "ADOBE-FIREFLY",
-      `off-screen Chrome warm refreshed ARP (len=${next.arpSessionId.length}, force=${force}, forterTs=${warmFtr || 0})`
+      `durable CDP warm refreshed session (arpLen=${next.arpSessionId.length}, force=${force}, forterTs=${warmFtr || 0})`
     );
     return next;
   } catch (err) {
     log?.warn?.(
       "ADOBE-FIREFLY",
-      `browser ARP refresh failed: ${err instanceof Error ? err.message : String(err)}`
+      `browser CDP session refresh failed: ${err instanceof Error ? err.message : String(err)}`
     );
     return null;
   }
@@ -504,7 +534,7 @@ export async function refreshAdobeSessionViaBrowser(
 
 /**
  * Resolve a durable Firefly session from stored credentials.
- * Caches in memory + DATA_DIR; rebuilds ARP from cookies; optionally warms via Playwright.
+ * Caches in memory + DATA_DIR; rebuilds ARP from cookies; optionally warms via durable CDP.
  */
 export async function ensureAdobeFireflySession(
   opts: AdobeFireflySessionResolveOpts
@@ -542,15 +572,22 @@ export async function ensureAdobeFireflySession(
       break;
     }
   }
-  // Cookie-only paste: use short-lived memory cache JWT only (not a stale disk token alone)
+  // A browser-refreshed disk token must survive process restarts. Prefer it when the pasted
+  // token is absent or near expiry; the fingerprint still binds it to these credentials.
+  const pastedExpiresAt = accessToken ? estimateAdobeTokenExpiry(accessToken) : 0;
+  const cachedExpiresAt = cached?.accessToken
+    ? cached.tokenExpiresAt > 0
+      ? cached.tokenExpiresAt
+      : estimateAdobeTokenExpiry(cached.accessToken)
+    : 0;
   if (
-    !accessToken &&
     cached?.accessToken &&
     isAdobeUserAccessToken(cached.accessToken) &&
-    sessionCache.has(fingerprint) &&
-    Date.now() - cached.updatedAt < 30 * 60_000
+    cachedExpiresAt - Date.now() >= JWT_REFRESH_SKEW_MS &&
+    (!accessToken || pastedExpiresAt - Date.now() < JWT_REFRESH_SKEW_MS)
   ) {
     accessToken = cached.accessToken;
+    pasteHadUserJwt = false;
   }
 
   // Cookie blob
@@ -642,15 +679,16 @@ export async function ensureAdobeFireflySession(
   //   - no AdobeID user JWT yet (profile may hold one — cookie/JWT-free path), or
   //   - stale Forter risk session and no recently-accepted (sticky 2xx) ARP to reuse.
   const jwtIsUser = isAdobeUserAccessToken(session.accessToken);
+  const jwtNeedsBrowserRefresh =
+    !jwtIsUser || session.tokenExpiresAt - Date.now() < JWT_REFRESH_SKEW_MS;
   const forterAgeMs = getAdobeForterAgeMs(session.cookie);
   const riskStale = !workingFresh && forterAgeMs > FORTER_PROACTIVE_WARM_MS;
   const shouldWarm =
     adobeFireflyBrowserEnabled() &&
     opts.allowBrowserRefresh !== false &&
-    (opts.forceRefresh || opts.rotateArp || !jwtIsUser || riskStale);
-  // Need something to warm from: a cookie to seed, a signed-in profile (no user JWT yet),
-  // or an explicit refresh request.
-  const canWarm = Boolean(session.cookie) || !jwtIsUser || Boolean(opts.forceRefresh);
+    (opts.forceRefresh || opts.rotateArp || jwtNeedsBrowserRefresh || riskStale);
+  // A persistent signed-in browser profile can refresh even when the stored cookie is empty.
+  const canWarm = true;
   if (shouldWarm && canWarm) {
     const key = fingerprint;
     let inflight = browserRefreshInFlight.get(key);
@@ -668,7 +706,7 @@ export async function ensureAdobeFireflySession(
       session = { ...warmed, fingerprint };
       opts.log?.info?.(
         "ADOBE-FIREFLY",
-        `off-screen Chrome session warm applied (reason=${opts.forceRefresh ? "force" : opts.rotateArp ? "rotate" : !jwtIsUser ? "no-user-jwt" : "stale-forter"})`
+        `durable CDP session warm applied (reason=${opts.forceRefresh ? "force" : opts.rotateArp ? "rotate" : jwtNeedsBrowserRefresh ? "jwt-expiry" : "stale-forter"})`
       );
     }
   }
@@ -690,10 +728,18 @@ export async function ensureAdobeFireflySession(
   if (!isAdobeUserAccessToken(session.accessToken)) {
     throw new AdobeFireflyError(
       "Adobe Firefly is not signed in. On Providers → Adobe Firefly → Add Account (OAuth) choose " +
-        "\"Sign in with browser\" (fresh login window) or \"Paste JWT / Cookie\". After browser sign-in " +
+        '"Sign in with browser" (fresh login window) or "Paste JWT / Cookie". After browser sign-in ' +
         "the app stores JWT+Cookie and keeps the risk session fresh automatically.",
       401,
       "not_signed_in"
+    );
+  }
+  if (session.tokenExpiresAt <= Date.now() + 30_000) {
+    throw new AdobeFireflyError(
+      "Adobe Firefly browser session expired and could not renew automatically. Re-open the " +
+        "Adobe Firefly account and sign in once so the durable browser profile can renew future JWTs.",
+      401,
+      "session_expired"
     );
   }
 
@@ -717,8 +763,16 @@ export async function rotateAdobeFireflySessionOnError(
     log?: AdobeFireflySessionResolveOpts["log"];
     /** Attempt index (1-based) for backoff policy. */
     attempt?: number;
+    /** 401/403: bypass quiet ARP reuse and refresh JWT + cookies immediately. */
+    authFailure?: boolean;
   }
 ): Promise<AdobeFireflySession> {
+  if (session.tokenExpiresAt <= 0) {
+    session = {
+      ...session,
+      tokenExpiresAt: estimateAdobeTokenExpiry(session.accessToken),
+    };
+  }
   const prevArp = session.arpSessionId;
   const attempt = opts?.attempt ?? 1;
   const forterTs = extractAdobeForterTimestampMs(session.cookie);
@@ -729,8 +783,12 @@ export async function rotateAdobeFireflySessionOnError(
 
   // Attempt 1–2 when forter is not known-stale: keep same ARP (colligo short load / rate limit).
   // Hours-old forter → skip quiet reuse and warm Chrome immediately (else all 5 attempts 408).
-  if (attempt <= 2 && !forterKnownStale) {
-    const same: AdobeFireflySession = { ...session, updatedAt: Date.now(), source: "cache" };
+  if (attempt <= 2 && !forterKnownStale && !opts?.authFailure) {
+    const same: AdobeFireflySession = {
+      ...session,
+      updatedAt: Date.now(),
+      source: "cache",
+    };
     sessionCache.set(session.fingerprint, same);
     saveDiskSession(same);
     opts?.log?.info?.(
@@ -741,16 +799,16 @@ export async function rotateAdobeFireflySessionOnError(
   }
 
   // Known-stale forter or attempt 3+: cookie rebuild is a no-op. Off-screen headed Chrome mints a
-  // fresh Forter/ARP (headless is rejected by colligo — see adobeFireflyChromeRuntime).
+  // fresh Forter/ARP (headless browsers are rejected by colligo, so CDP uses off-screen headed mode).
   clearAdobeFireflyWorkingArp(session.fingerprint);
   noteAdobeFireflySubmitFailure();
 
   const tryBrowser =
     opts?.tryBrowser !== false && process.env.ADOBE_FIREFLY_BROWSER_REFRESH !== "0";
-  if (tryBrowser && session.cookie) {
+  if (tryBrowser) {
     opts?.log?.info?.(
       "ADOBE-FIREFLY",
-      `408 recovery: off-screen Chrome warm (attempt=${attempt}, forterKnownStale=${forterKnownStale}, forterAgeMs=${forterAgeMs ?? "unknown"})`
+      `${opts?.authFailure ? "auth" : "408"} recovery: durable CDP warm (attempt=${attempt}, forterKnownStale=${forterKnownStale}, forterAgeMs=${forterAgeMs ?? "unknown"})`
     );
     const warmed = await refreshAdobeSessionViaBrowser(session, opts?.log, {
       force: true,
@@ -762,13 +820,15 @@ export async function rotateAdobeFireflySessionOnError(
       saveDiskSession(next);
       opts?.log?.info?.(
         "ADOBE-FIREFLY",
-        `408 recovery: Chrome warm done (arp changed=${warmed.arpSessionId !== prevArp}, forterTs=${extractAdobeForterTimestampMs(warmed.cookie)})`
+        `${opts?.authFailure ? "auth" : "408"} recovery: CDP warm done (arp changed=${warmed.arpSessionId !== prevArp}, forterTs=${extractAdobeForterTimestampMs(warmed.cookie)})`
       );
       return next;
     }
   }
 
-  const rebuilt = resolveAdobeArpSessionIdSmart(session.cookie, { rotate: true });
+  const rebuilt = resolveAdobeArpSessionIdSmart(session.cookie, {
+    rotate: true,
+  });
   const next: AdobeFireflySession = {
     ...session,
     arpSessionId: rebuilt && rebuilt !== prevArp ? rebuilt : session.arpSessionId,
