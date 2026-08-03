@@ -27,6 +27,8 @@ import {
 import { resolveProxyForConnection } from "@/lib/localDb";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { isCodexFreePlan } from "@omniroute/open-sse/executors/codex/tools.ts";
+import { resolveAdobeImageModel } from "@omniroute/open-sse/services/adobeFireflyClient.ts";
+import { getAdobeReferenceUploadLimit } from "@omniroute/open-sse/services/adobeFireflyModels.ts";
 import {
   getBodySizeLimit,
   readRequestBodyWithLimit,
@@ -207,7 +209,8 @@ function buildAdobeFireflyEditDataUrls(
     }
   }
   if (dataUrls.length === 0 && imageBytes && imageBytes.length > 0) {
-    const mime = typeof imageMime === "string" && imageMime.startsWith("image/") ? imageMime : "image/png";
+    const mime =
+      typeof imageMime === "string" && imageMime.startsWith("image/") ? imageMime : "image/png";
     dataUrls.push(`data:${mime};base64,${imageBytes.toString("base64")}`);
   }
   return dataUrls;
@@ -250,7 +253,10 @@ async function handleAdobeFireflyEditRequest(params: {
     resolvedModel
   );
   if (!credentials) {
-    return errorResponse(HTTP_STATUS.UNAUTHORIZED, `No credentials for provider: ${parsed.provider}`);
+    return errorResponse(
+      HTTP_STATUS.UNAUTHORIZED,
+      `No credentials for provider: ${parsed.provider}`
+    );
   }
   if (credentials.allRateLimited) {
     return unavailableResponse(
@@ -356,21 +362,30 @@ async function postHandler(request: Request, _context?: unknown) {
   const resolvedModel = await resolveImageRouteModel(fullModel);
   const parsed = parseImageModel(resolvedModel);
   const providerConfig = parsed.provider ? getImageProvider(parsed.provider) : null;
-  // Firefly nano/gpt-image accept multiple reference blobs; other non-Codex stay at 1.
+  let fireflyCapabilityLimit = MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
+  if (providerConfig?.format === "adobe-firefly-image") {
+    try {
+      const { spec } = resolveAdobeImageModel(parsed.model);
+      fireflyCapabilityLimit = getAdobeReferenceUploadLimit(spec, "image");
+    } catch (error) {
+      return errorResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        error instanceof Error ? error.message : "Unknown Adobe Firefly image model"
+      );
+    }
+  }
+  // Firefly limits come from the authenticated discovery schema; other non-Codex stay at 1.
   const maxRefsForProvider =
     providerConfig?.format === "adobe-firefly-image"
-      ? 4
+      ? fireflyCapabilityLimit
       : providerConfig?.format === "codex-responses"
         ? Number.POSITIVE_INFINITY
         : MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
-  if (
-    providerConfig?.format !== "codex-responses" &&
-    imageInputCount > maxRefsForProvider
-  ) {
+  if (providerConfig?.format !== "codex-responses" && imageInputCount > maxRefsForProvider) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
       providerConfig?.format === "adobe-firefly-image"
-        ? "Adobe Firefly image edit supports at most 4 reference images"
+        ? `Adobe Firefly image edit supports at most ${maxRefsForProvider} reference images for ${parsed.model}`
         : "This image edit provider currently supports only one reference image"
     );
   }

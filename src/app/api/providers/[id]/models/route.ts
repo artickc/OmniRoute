@@ -84,13 +84,13 @@ import {
   persistDiscoveredModels,
 } from "@/lib/providerModels/modelDiscovery";
 import { buildProviderModelsUrl, getDiscoveryClientVersionOptions } from "./discoveryClientVersion";
+import { getAdobeModels } from "./adobeFireflyDiscovery";
 import {
   parseGeminiModelsList,
   type GeminiDiscoveryModel,
 } from "@/lib/providerModels/geminiModelsParser";
 import { getSyncedAvailableModels, getCustomModels } from "@/lib/db/models";
 import { fetchCursorAgentModels } from "@/lib/providerModels/cursorAgent";
-import { maybeHandleConolModelDiscovery } from "./conolDiscovery";
 import {
   type JsonRecord,
   asRecord,
@@ -417,10 +417,7 @@ export async function GET(
       // #6267 — a models-endpoint redirect (307/308) is not a fixable-config
       // error. safeOutboundFetch throws REDIRECT_BLOCKED which
       // getSafeOutboundFetchErrorStatus maps to 503, but unlike the other 503
-      // cases (URL_GUARD_BLOCKED / INVALID_URL, which are genuinely
-      // unrecoverable and stay hard errors) a blocked redirect should degrade to
-      // the local/cached catalog OmniRoute ships instead of surfacing a raw 503.
-      // General fix — covers any config-driven provider that 307s (e.g. qwen-web).
+      // Redirect blocks degrade to the local/cached catalog; invalid URLs remain hard errors.
       if (error instanceof SafeOutboundFetchError && error.code === "REDIRECT_BLOCKED") {
         return buildDiscoveryFallbackResponse(warnings);
       }
@@ -428,6 +425,11 @@ export async function GET(
       if (status === 400 || status === 503 || status === 504) return null;
       return buildDiscoveryFallbackResponse(warnings);
     };
+
+    if (provider === "adobe-firefly") {
+      const discovery = await getAdobeModels(apiKey, accessToken, connection.providerSpecificData);
+      return buildResponse({ provider, connectionId, ...discovery });
+    }
 
     const maybeReturnCachedDiscovery = () => {
       if (!refresh && cachedDiscoveryModels.length > 0) {
@@ -661,21 +663,6 @@ export async function GET(
         });
       }
     }
-
-    const conolResponse = await maybeHandleConolModelDiscovery({
-      provider,
-      connectionId,
-      apiKey,
-      accessToken,
-      providerSpecificData: connection.providerSpecificData,
-      proxy,
-      maybeReturnCachedDiscovery,
-      maybeReturnAutoFetchDisabled,
-      buildDiscoveryFallbackResponse,
-      buildResponse,
-      buildApiDiscoveryResponse,
-    });
-    if (conolResponse) return conolResponse;
 
     if (provider === "bedrock") {
       const cachedResponse = maybeReturnCachedDiscovery();

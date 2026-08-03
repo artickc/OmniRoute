@@ -10,7 +10,6 @@ import {
   adobeFireflyApiKey,
   adobeFireflyBalanceApiKey,
   adobeFireflyImageTimeoutMs,
-  adobeFireflyMaxImageRefs,
   buildAdobeImagePayload,
   buildAdobePollHeaders,
   buildAdobeSubmitHeaders,
@@ -78,6 +77,11 @@ test("adobe-firefly is registered in IMAGE_PROVIDERS with adobe-firefly-image fo
   assert.equal(entry.format, "adobe-firefly-image");
   assert.match(entry.baseUrl, /firefly-3p\.ff\.adobe\.io/);
   assert.ok(Array.isArray(entry.models) && entry.models.length >= 4);
+  assert.equal(
+    entry.models.some((model: { id: string }) => model.id === "nano-banana-pro"),
+    false,
+    "routing-only compatibility aliases must not be advertised as discovered models"
+  );
 });
 
 test("adobe-firefly is registered in VIDEO_PROVIDERS with adobe-firefly-video format", () => {
@@ -157,20 +161,25 @@ test("normalizeAdobeOutputResolution maps quality tiers", () => {
   assert.equal(normalizeAdobeOutputResolution(undefined, undefined), "2K");
 });
 
-test("resolveAdobeImageModel maps catalog and long model ids", () => {
-  assert.equal(resolveAdobeImageModel("nano-banana-pro").id, "nano-banana-pro");
-  assert.equal(resolveAdobeImageModel("adobe-firefly/nano-banana-2").id, "nano-banana-2");
-  assert.equal(resolveAdobeImageModel("firefly-nano-banana-pro-2k-16x9").id, "nano-banana-pro");
-  assert.equal(resolveAdobeImageModel("gpt-image").id, "gpt-image");
+test("resolveAdobeImageModel maps valid aliases to exact discovery ids", () => {
+  assert.equal(resolveAdobeImageModel("nano-banana-pro").id, "gemini-flash-nano-banana-2");
+  assert.equal(
+    resolveAdobeImageModel("adobe-firefly/nano-banana-2").id,
+    "gemini-flash-nano-banana-3"
+  );
+  assert.equal(resolveAdobeImageModel("gpt-image").id, "gpt-image-2");
+  assert.throws(
+    () => resolveAdobeImageModel("invented-image-model"),
+    /Unknown Adobe Firefly image model/
+  );
   assert.ok(ADOBE_FIREFLY_IMAGE_MODELS["nano-banana-pro"].upstreamModelVersion);
 });
 
-test("resolveAdobeVideoModel maps sora/veo/kling families", () => {
-  assert.equal(resolveAdobeVideoModel("sora-2").id, "sora-2");
-  assert.equal(resolveAdobeVideoModel("firefly-sora2-pro-8s-16x9").id, "sora-2-pro");
-  assert.equal(resolveAdobeVideoModel("veo-3.1-fast").id, "veo-3.1-fast");
-  assert.equal(resolveAdobeVideoModel("kling-3").id, "kling-3");
-  assert.ok(ADOBE_FIREFLY_VIDEO_MODELS["sora-2"].defaultDuration > 0);
+test("resolveAdobeVideoModel maps only discovered video models", () => {
+  assert.equal(resolveAdobeVideoModel("veo-3.1-fast").id, "veo-3.1-fast-generate");
+  assert.equal(resolveAdobeVideoModel("kling-3").id, "kling-kling-v3-standard-i2v");
+  assert.throws(() => resolveAdobeVideoModel("sora-2"), /Unknown Adobe Firefly video model/);
+  assert.ok(ADOBE_FIREFLY_VIDEO_MODELS["veo-3.1"].defaultDuration > 0);
 });
 
 test("buildAdobeImagePayload produces nano and gpt-image shapes", () => {
@@ -227,41 +236,12 @@ test("buildAdobeImagePayload attaches referenceBlobs like live adobe_atach_image
     sourceImageIds: ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
   });
   assert.deepEqual(gpt.referenceBlobs, [
-    { id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", usage: "subject" },
+    { id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", usage: "source" },
   ]);
   assert.equal((gpt.generationMetadata as Record<string, unknown>).module, "image2image");
-
-  // gpt-image: only first 2 subject refs survive (extra screenshots hang colligo).
-  const gptMany = buildAdobeImagePayload({
-    prompt: "edit me",
-    aspectRatio: "1:1",
-    outputResolution: "1K",
-    modelSpec: ADOBE_FIREFLY_IMAGE_MODELS["gpt-image-2"],
-    sourceImageIds: ["id-1", "id-2", "id-3", "id-4", "id-5"],
-  });
-  assert.deepEqual(gptMany.referenceBlobs, [
-    { id: "id-1", usage: "subject" },
-    { id: "id-2", usage: "subject" },
-  ]);
-
-  // nano keeps up to 4 general refs for multi-panel composition.
-  const nanoMany = buildAdobeImagePayload({
-    prompt: "compose",
-    aspectRatio: "16:9",
-    outputResolution: "2K",
-    modelSpec: ADOBE_FIREFLY_IMAGE_MODELS["nano-banana-2"],
-    sourceImageIds: ["a", "b", "c", "d", "e"],
-  });
-  assert.equal((nanoMany.referenceBlobs as unknown[]).length, 4);
-  assert.equal((nanoMany.referenceBlobs as Array<{ usage: string }>)[0].usage, "general");
 });
 
-test("adobeFireflyMaxImageRefs + adaptive image timeout", () => {
-  assert.equal(adobeFireflyMaxImageRefs("gpt-image-2"), 2);
-  assert.equal(adobeFireflyMaxImageRefs("adobe-firefly/gpt-image"), 2);
-  assert.equal(adobeFireflyMaxImageRefs("nano-banana-2"), 4);
-  assert.equal(adobeFireflyMaxImageRefs("flux-2"), 2);
-
+test("adaptive image timeout grows with uploaded reference count", () => {
   assert.equal(adobeFireflyImageTimeoutMs({ refCount: 0 }), DEFAULT_IMAGE_TIMEOUT_MS);
   assert.equal(
     adobeFireflyImageTimeoutMs({ refCount: 2 }),
@@ -345,16 +325,7 @@ test("resolveAdobeSourceImageIds uploads data URLs then returns blob ids", async
   assert.equal(ADOBE_FIREFLY_IMAGE_UPLOAD_URL.includes("storage/image"), true);
 });
 
-test("buildAdobeVideoPayload produces sora and veo shapes", () => {
-  const sora = buildAdobeVideoPayload({
-    prompt: "ocean waves",
-    aspectRatio: "16:9",
-    duration: 8,
-    modelSpec: ADOBE_FIREFLY_VIDEO_MODELS["sora-2"],
-  });
-  assert.equal(sora.modelId, "sora");
-  assert.equal(sora.duration, 8);
-
+test("buildAdobeVideoPayload follows discovered fields and reference roles", () => {
   const veo = buildAdobeVideoPayload({
     prompt: "city flyover",
     aspectRatio: "9:16",
@@ -363,12 +334,30 @@ test("buildAdobeVideoPayload produces sora and veo shapes", () => {
   });
   assert.equal(veo.modelId, "veo");
   assert.equal(veo.modelVersion, "3.1-generate");
-  assert.equal(
-    (veo.modelSpecificPayload as Record<string, Record<string, unknown>>).parameters
-      .durationSeconds,
-    6
-  );
+  assert.equal(veo.duration, 6);
   assert.equal(veo.generateAudio, true);
+
+  const kling = buildAdobeVideoPayload({
+    prompt: "ocean waves",
+    aspectRatio: "16:9",
+    duration: 5,
+    modelSpec: ADOBE_FIREFLY_VIDEO_MODELS["kling-3"],
+    sourceImageIds: ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
+  });
+  assert.equal(kling.modelVersion, "kling_v3_standard_i2v");
+  assert.deepEqual(kling.referenceBlobs, [
+    { id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", usage: "frame", order: 1 },
+  ]);
+  assert.throws(
+    () =>
+      buildAdobeVideoPayload({
+        prompt: "bad duration",
+        aspectRatio: "16:9",
+        duration: 5,
+        modelSpec: ADOBE_FIREFLY_VIDEO_MODELS["veo-3.1"],
+      }),
+    /supports duration/
+  );
 });
 
 test("extractAdobeResultLink prefers x-override-status-link then links.result", () => {
@@ -538,7 +527,7 @@ test("adobe-firefly is in USAGE_SUPPORTED_PROVIDERS for Limits", () => {
   assert.ok(USAGE_SUPPORTED_PROVIDERS.includes("firefly"));
 });
 
-test("parseAdobeModelsDiscovery extracts image/video versions", () => {
+test("parseAdobeModelsDiscovery preserves schemas and maps exact ids", () => {
   const rows = parseAdobeModelsDiscovery({
     models: [
       {
@@ -549,16 +538,44 @@ test("parseAdobeModelsDiscovery extracts image/video versions", () => {
             outputModality: ["image"],
             modelDisplayName: "Gemini 3.0 (Nano Banana Pro)",
             healthStatus: "HEALTHY",
+            inputMediaUseCase: ["editing"],
+            bksGenerationModel: "firefly_3p:external:gemini_flash_2",
+            requestSchema: {
+              type: "object",
+              properties: {
+                prompt: { type: "string" },
+                referenceBlobs: {
+                  maxItems: 14,
+                  "x-capabilities": [
+                    {
+                      mediaType: "image",
+                      usageConstraints: [{ usageType: "general", minItems: 0, maxItems: 14 }],
+                      maxFileSizeBytes: 104857600,
+                    },
+                  ],
+                },
+              },
+            },
           },
         },
       },
       {
-        modelId: "sora",
+        modelId: "veo",
         modelVersions: {
-          "sora-2": {
+          "3.1-generate": {
             enabled: true,
             outputModality: ["video"],
-            modelDisplayName: "Sora 2",
+            modelDisplayName: "Veo 3.1",
+            requestSchema: {
+              allOf: [
+                {
+                  properties: {
+                    prompt: { type: "string" },
+                    duration: { anyOf: [{ type: "integer", enum: [4, 6, 8] }] },
+                  },
+                },
+              ],
+            },
           },
         },
       },
@@ -568,14 +585,35 @@ test("parseAdobeModelsDiscovery extracts image/video versions", () => {
   assert.equal(rows[0].modality, "image");
   assert.equal(rows[1].modality, "video");
   const catalog = mapDiscoveredToCatalog(rows);
-  assert.ok(catalog.some((m) => m.id === "nano-banana-pro"));
-  assert.ok(catalog.some((m) => m.id === "sora-2"));
+  assert.ok(catalog.some((m) => m.id === "gemini-flash-nano-banana-2"));
+  assert.ok(catalog.some((m) => m.id === "veo-3.1-generate"));
+  assert.equal(catalog[0].capabilities.referenceInputs[0].maxItems, 14);
+  assert.deepEqual(catalog[1].capabilities.supportedDurations, [4, 6, 8]);
 });
 
-test("fallback catalog has image and video entries from get_models capture", () => {
-  assert.ok(ADOBE_FIREFLY_FALLBACK_MODELS.length >= 10);
-  assert.ok(getAdobeFireflyFallbackCatalog("image").length >= 4);
-  assert.ok(getAdobeFireflyFallbackCatalog("video").length >= 4);
+test("fallback catalog is the verified discovery snapshot without invented Sora", () => {
+  assert.equal(ADOBE_FIREFLY_FALLBACK_MODELS.length, 52);
+  assert.equal(getAdobeFireflyFallbackCatalog("image").length, 17);
+  assert.equal(getAdobeFireflyFallbackCatalog("video").length, 35);
+  assert.equal(
+    ADOBE_FIREFLY_FALLBACK_MODELS.some((model) => model.id.includes("sora")),
+    false
+  );
+  assert.equal(
+    ADOBE_FIREFLY_FALLBACK_MODELS.some(
+      (model) => model.id.includes("kling") && model.id.includes("omni")
+    ),
+    false
+  );
+  assert.ok(ADOBE_FIREFLY_FALLBACK_MODELS.some((model) => model.id === "kling-kling-o3"));
+  assert.equal(
+    ADOBE_FIREFLY_IMAGE_MODELS["nano-banana-pro"].capabilities.referenceInputs[0].maxItems,
+    14
+  );
+  assert.equal(
+    ADOBE_FIREFLY_IMAGE_MODELS["gpt-image"].capabilities.referenceInputs[0].maxItems,
+    16
+  );
 });
 
 test("extractAdobeAccountIdFromToken reads user_id claim", () => {
@@ -733,7 +771,7 @@ test("adobeFireflyGenerateVideo submit+poll happy path (mocked)", async () => {
   const result = await adobeFireflyGenerateVideo({
     accessToken: "tok",
     prompt: "drone over forest",
-    model: "sora-2",
+    model: "veo-3.1",
     duration: 4,
     aspectRatio: "16:9",
     fetchImpl: fetchImpl as typeof fetch,
@@ -744,7 +782,7 @@ test("adobeFireflyGenerateVideo submit+poll happy path (mocked)", async () => {
 
 test("handleAdobeFireflyVideoGeneration returns 400 without prompt", async () => {
   const result = await handleAdobeFireflyVideoGeneration({
-    model: "sora-2",
+    model: "veo-3.1",
     provider: "adobe-firefly",
     body: {},
     credentials: { apiKey: "aaa.bbb.ccc" },

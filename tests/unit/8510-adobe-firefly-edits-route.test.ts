@@ -2,7 +2,7 @@
 // Firefly branch that /v1/images/edits gained in this PR. Exercises the actual
 // POST(request) handler (not the inner handleAdobeFireflyImageGeneration helper directly,
 // which tests/unit/adobe-firefly.test.ts already covers) so the credentials /
-// rate-limit / 4-reference-cap branches added to route.ts itself are proven, not just the
+// rate-limit / discovery-reference-cap branches added to route.ts itself are proven, not just the
 // downstream service call.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,10 +19,8 @@ const providersDb = await import("../../src/lib/db/providers.ts");
 const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 const imageEditRoute = await import("../../src/app/api/v1/images/edits/route.ts");
 const v1ModelsCatalog = await import("../../src/app/api/v1/models/catalog.ts");
-const {
-  ADOBE_FIREFLY_IMAGE_UPLOAD_URL,
-  ADOBE_FIREFLY_IMAGE_SUBMIT_URL,
-} = await import("../../open-sse/services/adobeFireflyClient.ts");
+const { ADOBE_FIREFLY_FTR_MAGIC, ADOBE_FIREFLY_IMAGE_UPLOAD_URL, ADOBE_FIREFLY_IMAGE_SUBMIT_URL } =
+  await import("../../open-sse/services/adobeFireflyClient.ts");
 
 interface ErrorResponseBody {
   error: { message: string; code?: string };
@@ -37,8 +35,8 @@ const originalFetch = globalThis.fetch;
 async function resetStorage() {
   globalThis.fetch = originalFetch;
   apiKeysDb.resetApiKeyState();
-  core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  core.closeDbInstance();
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   v1ModelsCatalog.__resetCatalogBuilderRunsForTest();
 }
@@ -58,17 +56,26 @@ async function seedAdobeFireflyConnection(
 }
 
 // Mirrors tests/unit/adobe-firefly.test.ts's userImsJwt() helper — a synthetic,
-// non-guest IMS access token shape so resolveAdobeAccessToken() accepts it directly
-// without needing a live cookie->token exchange call.
+// healthy authenticated session so this route test stays on the HTTP path. Browser renewal
+// itself is covered by adobe-firefly-browser-login.test.ts.
 function userImsJwt(userId = "0EB@AdobeID"): string {
-  return (
+  const jwt =
     `eyJhbGciOiJSUzI1NiJ9.` +
     Buffer.from(
-      JSON.stringify({ user_id: userId, type: "access_token", client_id: "clio-playground-web" })
+      JSON.stringify({
+        user_id: userId,
+        type: "access_token",
+        client_id: "clio-playground-web",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })
     ).toString("base64url") +
     `.` +
-    "sig".padEnd(40, "x")
-  );
+    "sig".padEnd(40, "x");
+  const forterToken = `test_${Date.now()}${ADOBE_FIREFLY_FTR_MAGIC}_x=-1-v2_tt`;
+  const cookie =
+    `ff_session_guid=test-session-guid; arkose=test-arkose; ` +
+    `forterToken=${encodeURIComponent(forterToken)}`;
+  return `${jwt}\n${cookie}`;
 }
 
 function dataUrlPng(bytes: number[]): string {
@@ -85,8 +92,8 @@ test.beforeEach(async () => {
 test.after(() => {
   globalThis.fetch = originalFetch;
   apiKeysDb.resetApiKeyState();
-  core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  core.closeDbInstance();
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 test("#8510 v1 image edit POST uploads Adobe Firefly reference images and dispatches referenceBlobs", async () => {
@@ -148,19 +155,16 @@ test("#8510 v1 image edit POST uploads Adobe Firefly reference images and dispat
     id: string;
   }>;
   assert.ok(Array.isArray(referenceBlobs), "generate-async payload must carry referenceBlobs");
-  assert.deepEqual(
-    referenceBlobs.map((r) => r.id).sort(),
-    [...uploadedIds].sort()
-  );
+  assert.deepEqual(referenceBlobs.map((r) => r.id).sort(), [...uploadedIds].sort());
 });
 
-test("#8510 v1 image edit POST rejects more than 4 Adobe Firefly reference images", async () => {
+test("#8510 v1 image edit POST rejects references above the discovered model limit", async () => {
   await seedAdobeFireflyConnection();
   globalThis.fetch = async () => {
     throw new Error("Over-cap Adobe Firefly reference sets must not reach upstream");
   };
 
-  const images = Array.from({ length: 5 }, (_, i) => dataUrlPng([0x89, 0x50, 0x4e, 0x47, i + 1]));
+  const images = Array.from({ length: 15 }, (_, i) => dataUrlPng([0x89, 0x50, 0x4e, 0x47, i + 1]));
   const response = await imageEditRoute.POST(
     new Request("http://localhost/api/v1/images/edits", {
       method: "POST",
@@ -175,7 +179,10 @@ test("#8510 v1 image edit POST rejects more than 4 Adobe Firefly reference image
   const body = (await response.json()) as ErrorResponseBody;
 
   assert.equal(response.status, 400);
-  assert.match(body.error.message, /Adobe Firefly image edit supports at most 4 reference images/);
+  assert.match(
+    body.error.message,
+    /Adobe Firefly image edit supports at most 14 reference images for nano-banana-pro/
+  );
   // Hard Rule #12 — every error response routes through buildErrorBody/sanitizeErrorMessage
   // and must never leak a raw stack trace.
   assert.ok(!body.error.message.includes("at /"));
@@ -206,7 +213,9 @@ test("#8510 v1 image edit POST surfaces missing Adobe Firefly credentials", asyn
 });
 
 test("#8510 v1 image edit POST surfaces Adobe Firefly rate-limit sentinel", async () => {
-  await seedAdobeFireflyConnection({ rateLimitedUntil: new Date(Date.now() + 60_000).toISOString() });
+  await seedAdobeFireflyConnection({
+    rateLimitedUntil: new Date(Date.now() + 60_000).toISOString(),
+  });
   globalThis.fetch = async () => {
     throw new Error("Rate-limited path must not reach upstream");
   };
