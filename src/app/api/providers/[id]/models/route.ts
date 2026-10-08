@@ -139,8 +139,7 @@ import {
 } from "./discovery/codex";
 import { getCodexDiscoveryMode } from "@/shared/services/codexDiscoveryPolicy";
 import { fetchClaudeDiscoveryModels } from "./discovery/claude";
-import { maybeHandleConolModelDiscovery } from "./conolDiscovery";
-import { maybeHandleSyntxModelDiscovery } from "./syntxDiscovery";
+import { maybeHandleConolOrSyntxModelDiscovery } from "./webSessionDiscovery";
 import { maybeHandleVertexModelDiscovery } from "./vertexDiscovery";
 import { buildNoAuthModelsResponse, filterModelsForRoute } from "./modelRouteProjection";
 
@@ -666,7 +665,7 @@ export async function GET(
       }
     }
 
-    const conolResponse = await maybeHandleConolModelDiscovery({
+    const conolResponse = await maybeHandleConolOrSyntxModelDiscovery({
       provider,
       connectionId,
       apiKey,
@@ -680,21 +679,6 @@ export async function GET(
       buildApiDiscoveryResponse,
     });
     if (conolResponse) return conolResponse;
-
-    const syntxResponse = await maybeHandleSyntxModelDiscovery({
-      provider,
-      connectionId,
-      apiKey,
-      accessToken,
-      providerSpecificData: connection.providerSpecificData,
-      proxy,
-      maybeReturnCachedDiscovery,
-      maybeReturnAutoFetchDisabled,
-      buildDiscoveryFallbackResponse,
-      buildResponse,
-      buildApiDiscoveryResponse,
-    });
-    if (syntxResponse) return syntxResponse;
 
     if (provider === "bedrock") {
       const cachedResponse = maybeReturnCachedDiscovery();

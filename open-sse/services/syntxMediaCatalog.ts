@@ -286,12 +286,7 @@ function media(
   };
 }
 
-export function inferSyntxMediaKind(aiName: string): SyntxMediaKind | null {
-  const key = (aiName || "").trim();
-  if (!key) return null;
-  if (TEXT_AI_NAMES.has(key)) return null;
-  if (SCOPE_BY_AI_NAME[key]) return SCOPE_BY_AI_NAME[key];
-  const lower = key.toLowerCase();
+function kindFromLowerName(lower: string): SyntxMediaKind | null {
   if (lower === "magnific" || lower === "topaz_ai" || lower.includes("upscale")) return "upscale";
   if (
     lower.includes("suno") ||
@@ -303,17 +298,12 @@ export function inferSyntxMediaKind(aiName: string): SyntxMediaKind | null {
   }
   if (lower.includes("eleven") || lower.includes("tts") || lower.endsWith("-voice"))
     return "speech";
-  if (
-    lower.endsWith("_video") ||
-    lower === "kling" ||
-    lower === "runway" ||
-    lower === "sora" ||
-    lower === "seedance" ||
-    lower === "beeble" ||
-    lower === "topaz_astra"
-  ) {
-    return "video";
-  }
+  return kindFromVideoOrImageName(lower);
+}
+
+function kindFromVideoOrImageName(lower: string): SyntxMediaKind | null {
+  const videoNames = new Set(["kling", "runway", "sora", "seedance", "beeble", "topaz_astra"]);
+  if (lower.endsWith("_video") || videoNames.has(lower)) return "video";
   if (
     lower.endsWith("_image") ||
     lower.endsWith("-images") ||
@@ -328,6 +318,13 @@ export function inferSyntxMediaKind(aiName: string): SyntxMediaKind | null {
     return "image";
   }
   return null;
+}
+
+export function inferSyntxMediaKind(aiName: string): SyntxMediaKind | null {
+  const key = (aiName || "").trim();
+  if (!key || TEXT_AI_NAMES.has(key)) return null;
+  if (SCOPE_BY_AI_NAME[key]) return SCOPE_BY_AI_NAME[key];
+  return kindFromLowerName(key.toLowerCase());
 }
 
 export function parseSyntxMediaModelId(raw: string): { aiName: string; modelType: string } {
@@ -385,50 +382,71 @@ export function parseSyntxAiServices(json: unknown): Map<string, string> {
   return map;
 }
 
+function catalogRows(modelsJson: unknown): unknown[] {
+  const root = asRecord(modelsJson);
+  if (Array.isArray(root.models)) return root.models;
+  if (Array.isArray(modelsJson)) return modelsJson;
+  if (Array.isArray(root.data)) return root.data;
+  return [];
+}
+
+function trimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function allowedMediaTypes(settings: Record<string, unknown>): string[] {
+  return Array.isArray(settings.allowed_media_types)
+    ? settings.allowed_media_types.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function mediaRowIdentity(
+  rec: Record<string, unknown>
+): { modelType: string; aiName: string } | null {
+  const modelType = trimmedString(rec.value) || trimmedString(rec.id);
+  const aiName = trimmedString(rec.ai_name);
+  if (!modelType || !aiName || TEXT_AI_NAMES.has(aiName)) return null;
+  return { modelType, aiName };
+}
+
+function parseOneMediaModel(
+  row: unknown,
+  services: Map<string, string> | undefined,
+  seen: Set<string>
+): SyntxMediaModel | null {
+  const rec = asRecord(row);
+  const identity = mediaRowIdentity(rec);
+  if (!identity) return null;
+  const { modelType, aiName } = identity;
+  const id = `${aiName}/${modelType}`;
+  if (seen.has(id)) return null;
+  const seed = SYNTX_FALLBACK_MEDIA_MODELS.find((item) => item.id === id);
+  const kind = seed?.kind || resolveLiveKind(aiName, services?.get(aiName) || "", modelType);
+  if (!kind) return null;
+  seen.add(id);
+  const inputModalities =
+    seed?.inputModalities ||
+    inputModalitiesFor(kind, allowedMediaTypes(asRecord(rec.settings)), modelType);
+  return {
+    id,
+    name: trimmedString(rec.label) || modelType,
+    aiName,
+    modelType,
+    kind,
+    inputModalities,
+    caps: seed?.caps || defaultCapsFor(kind, aiName, modelType, inputModalities),
+  };
+}
+
 export function parseSyntxMediaModelsCatalog(
   modelsJson: unknown,
   services?: Map<string, string>
 ): SyntxMediaModel[] {
-  const root = asRecord(modelsJson);
-  const rows = Array.isArray(root.models)
-    ? root.models
-    : Array.isArray(modelsJson)
-      ? modelsJson
-      : Array.isArray(root.data)
-        ? root.data
-        : [];
   const seen = new Set<string>();
   const models: SyntxMediaModel[] = [];
-  for (const row of rows) {
-    const rec = asRecord(row);
-    const modelType =
-      (typeof rec.value === "string" && rec.value.trim()) ||
-      (typeof rec.id === "string" && rec.id.trim()) ||
-      "";
-    const aiName = typeof rec.ai_name === "string" ? rec.ai_name.trim() : "";
-    if (!modelType || !aiName || TEXT_AI_NAMES.has(aiName)) continue;
-    const id = `${aiName}/${modelType}`;
-    if (seen.has(id)) continue;
-    const seed = SYNTX_FALLBACK_MEDIA_MODELS.find((item) => item.id === id);
-    // Seed kind wins so ideogram/upscale stays upscale even when ai_name maps to image.
-    const kind = seed?.kind || resolveLiveKind(aiName, services?.get(aiName) || "", modelType);
-    if (!kind) continue;
-    seen.add(id);
-    const label = typeof rec.label === "string" && rec.label.trim() ? rec.label.trim() : modelType;
-    const settings = asRecord(rec.settings);
-    const accepted = Array.isArray(settings.allowed_media_types)
-      ? settings.allowed_media_types.filter((item): item is string => typeof item === "string")
-      : [];
-    const inputModalities = seed?.inputModalities || inputModalitiesFor(kind, accepted, modelType);
-    models.push({
-      id,
-      name: label,
-      aiName,
-      modelType,
-      kind,
-      inputModalities,
-      caps: seed?.caps || defaultCapsFor(kind, aiName, modelType, inputModalities),
-    });
+  for (const row of catalogRows(modelsJson)) {
+    const model = parseOneMediaModel(row, services, seen);
+    if (model) models.push(model);
   }
   return models;
 }

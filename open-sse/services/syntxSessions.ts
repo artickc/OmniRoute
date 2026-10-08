@@ -50,35 +50,41 @@ export function canonicalizeSyntxUserText(text: string): string {
   return t.replace(/\s+/g, " ").trim();
 }
 
+function extractFromObject(content: Record<string, unknown>): string {
+  if (typeof content.text === "string" && content.text) return content.text;
+  if (typeof content.content === "string" && content.content) return content.content;
+  if (Array.isArray(content.content)) return extractSyntxMessageText(content.content);
+  if (Array.isArray(content.parts)) return extractSyntxMessageText(content.parts);
+  return "";
+}
+
+function extractFromPart(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object") return "";
+  const rec = part as Record<string, unknown>;
+  const type = typeof rec.type === "string" ? rec.type.toLowerCase() : "";
+  if (type === "tool_result" || type === "function_result") {
+    return (
+      extractSyntxMessageText(rec.content) ||
+      extractSyntxMessageText(rec.output) ||
+      (typeof rec.content === "string" ? rec.content : "")
+    );
+  }
+  if (typeof rec.text === "string" && rec.text) return rec.text;
+  if (typeof rec.content === "string" && rec.content) return rec.content;
+  return "";
+}
+
 export function extractSyntxMessageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (content && typeof content === "object" && !Array.isArray(content)) {
-    const rec = content as Record<string, unknown>;
-    if (typeof rec.text === "string" && rec.text) return rec.text;
-    if (typeof rec.content === "string" && rec.content) return rec.content;
-    if (Array.isArray(rec.content)) return extractSyntxMessageText(rec.content);
-    if (Array.isArray(rec.parts)) return extractSyntxMessageText(rec.parts);
+    return extractFromObject(content as Record<string, unknown>);
   }
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const part of content) {
-    if (typeof part === "string") {
-      if (part) parts.push(part);
-      continue;
-    }
-    if (!part || typeof part !== "object") continue;
-    const rec = part as Record<string, unknown>;
-    const type = typeof rec.type === "string" ? rec.type.toLowerCase() : "";
-    if (type === "tool_result" || type === "function_result") {
-      const inner =
-        extractSyntxMessageText(rec.content) ||
-        extractSyntxMessageText(rec.output) ||
-        (typeof rec.content === "string" ? rec.content : "");
-      if (inner) parts.push(inner);
-      continue;
-    }
-    if (typeof rec.text === "string" && rec.text) parts.push(rec.text);
-    else if (typeof rec.content === "string" && rec.content) parts.push(rec.content);
+    const text = extractFromPart(part);
+    if (text) parts.push(text);
   }
   return parts.join("\n");
 }
@@ -104,7 +110,11 @@ export function lastUserMessage(messages: SyntxChatMessage[]): SyntxChatMessage 
   return null;
 }
 
-export function hashSyntxConversation(fingerprint: string, model: string, messages: SyntxChatMessage[]): string {
+export function hashSyntxConversation(
+  fingerprint: string,
+  model: string,
+  messages: SyntxChatMessage[]
+): string {
   const payload = messages
     .map((message) => {
       const role = (message.role || "").toLowerCase();
@@ -164,7 +174,11 @@ export function looksLikeClaudeCodeSessionReset(text: string): boolean {
   if (!t) return false;
   if (/<command-name>\s*\/(?:new|clear)\s*<\/command-name>/i.test(t)) return true;
   if (/<command-message>\s*(?:new|clear)\s*<\/command-message>/i.test(t)) return true;
-  if (t.includes("<local-command-caveat>") && /<\/command-name>/i.test(t) && /\/(?:new|clear)/i.test(t)) {
+  if (
+    t.includes("<local-command-caveat>") &&
+    /<\/command-name>/i.test(t) &&
+    /\/(?:new|clear)/i.test(t)
+  ) {
     return true;
   }
   return false;
@@ -179,23 +193,28 @@ export function stripClaudeCodeLocalCommandEnvelope(text: string): string {
   t = t.replace(/<command-args>[\s\S]*?<\/command-args>/gi, "");
   t = t.replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "");
   t = t.replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/gi, "");
-  return t.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return t
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function userHasToolResult(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const type = String((part as Record<string, unknown>).type || "").toLowerCase();
+    if (type === "tool_result" || type === "function_result") return true;
+  }
+  return false;
 }
 
 export function isSyntxFollowUpHistory(messages: SyntxChatMessage[]): boolean {
   for (const message of messages || []) {
     const role = (message?.role || "").toLowerCase();
-    if (role === "assistant" || role === "model" || role === "tool" || role === "function") return true;
-    if (role === "user" || role === "human") {
-      const content = message.content;
-      if (Array.isArray(content)) {
-        for (const part of content) {
-          if (!part || typeof part !== "object") continue;
-          const type = String((part as Record<string, unknown>).type || "").toLowerCase();
-          if (type === "tool_result" || type === "function_result") return true;
-        }
-      }
-    }
+    if (role === "assistant" || role === "model" || role === "tool" || role === "function")
+      return true;
+    if ((role === "user" || role === "human") && userHasToolResult(message.content)) return true;
   }
   return false;
 }
@@ -203,7 +222,8 @@ export function isSyntxFollowUpHistory(messages: SyntxChatMessage[]): boolean {
 /** After /new|/clear, session memory must only see the new first user turn. */
 export function syntxMessagesForNewSession(messages: SyntxChatMessage[]): SyntxChatMessage[] {
   const raw = lastUserTextForReset(messages);
-  const stripped = stripClaudeCodeLocalCommandEnvelope(raw) || canonicalizeSyntxUserText(raw) || raw.trim();
+  const stripped =
+    stripClaudeCodeLocalCommandEnvelope(raw) || canonicalizeSyntxUserText(raw) || raw.trim();
   return [{ role: "user", content: stripped || "hi" }];
 }
 
@@ -261,7 +281,9 @@ export function lookupSyntxContinueChatUuid(
 ): string | null {
   const first = canonicalizeSyntxUserText(firstUserText);
   if (!first) return null;
-  return lookupSyntxChatUuid(hashSyntxConversation(fingerprint, model, [{ role: "user", content: first }]));
+  return lookupSyntxChatUuid(
+    hashSyntxConversation(fingerprint, model, [{ role: "user", content: first }])
+  );
 }
 
 export function rememberSyntxChatUuid(key: string, chatUuid: string, pending = false): void {
@@ -382,7 +404,10 @@ export function rememberSyntxFollowUp(
     rememberSyntxChatUuid(hashSyntxConversation(fingerprint, model, prefix), chatUuid);
   }
   const next = [
-    ...messages.map((message) => ({ role: message.role, content: extractSyntxMessageText(message.content) })),
+    ...messages.map((message) => ({
+      role: message.role,
+      content: extractSyntxMessageText(message.content),
+    })),
     { role: "assistant", content: assistantText },
   ];
   rememberSyntxChatUuid(hashSyntxConversation(fingerprint, model, next), chatUuid);

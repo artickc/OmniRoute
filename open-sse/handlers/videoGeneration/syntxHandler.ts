@@ -36,6 +36,87 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; mime: string; name
   }
 }
 
+async function uploadVideoRefs(
+  token: string,
+  body: Record<string, unknown>,
+  fetchImpl: typeof fetch
+): Promise<string[]> {
+  const rawFiles = [
+    ...collectUrls(body.image),
+    ...collectUrls(body.image_url),
+    ...collectUrls(body.image_urls),
+    ...collectUrls(body.file_urls),
+  ];
+  const fileUrls: string[] = [];
+  for (const ref of rawFiles) {
+    if (ref.startsWith("data:")) {
+      const decoded = decodeDataUrl(ref);
+      if (!decoded) continue;
+      const url = await uploadSyntxMediaFile({
+        token,
+        bytes: decoded.bytes,
+        filename: decoded.name,
+        mimeType: decoded.mime,
+        fetchImpl,
+      });
+      if (url) fileUrls.push(url);
+    } else if (/^https?:\/\//i.test(ref)) {
+      fileUrls.push(ref);
+    }
+  }
+  return fileUrls;
+}
+
+async function runSyntxVideoJob(options: {
+  token: string;
+  model: string;
+  provider: string;
+  body: Record<string, unknown>;
+  prompt: string;
+  startTime: number;
+  log?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
+  fetchImpl: typeof fetch;
+}) {
+  const fileUrls = await uploadVideoRefs(options.token, options.body, options.fetchImpl);
+  const { aiName, modelType } = resolveSyntxMediaTarget(options.model, "video");
+  const settings = mapSyntxVideoRequestSettings(aiName, modelType, options.body);
+  const result = await runSyntxVideoGeneration({
+    token: options.token,
+    model: options.model,
+    prompt: options.prompt,
+    settings,
+    fileUrls: fileUrls.length > 0 ? fileUrls : undefined,
+    audioUrl: typeof options.body.audio_url === "string" ? options.body.audio_url : undefined,
+    timeoutMs: typeof options.body.timeout_ms === "number" ? options.body.timeout_ms : undefined,
+    fetchImpl: options.fetchImpl,
+  });
+  const url = firstMediaUrl(result, "video") || result.media[0]?.url;
+  if (!url) {
+    return {
+      success: false,
+      status: 502,
+      error: "SYNTX video generation completed without a video URL",
+    };
+  }
+  const wantsBase64 = String(options.body.response_format || "").toLowerCase() === "b64_json";
+  const item = wantsBase64
+    ? {
+        b64_json: (await fetchSyntxMediaBytes(url, options.fetchImpl)).bytes.toString("base64"),
+        format: "mp4",
+      }
+    : { url, format: "mp4" };
+  saveCallLog({
+    method: "POST",
+    path: "/v1/videos/generations",
+    status: 200,
+    model: `${options.provider}/${options.model}`,
+    provider: options.provider,
+    duration: Date.now() - options.startTime,
+  }).catch(() => {});
+  options.log?.info?.("VIDEO", `SYNTX generated video via ${options.model}`);
+  return { success: true, data: { created: Math.floor(Date.now() / 1000), data: [item] } };
+}
+
 export async function handleSyntxVideoGeneration({
   model,
   provider,
@@ -59,13 +140,8 @@ export async function handleSyntxVideoGeneration({
   const startTime = Date.now();
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   if (!prompt) {
-    return {
-      success: false,
-      status: 400,
-      error: "Prompt is required for SYNTX video generation",
-    };
+    return { success: false, status: 400, error: "Prompt is required for SYNTX video generation" };
   }
-
   const token = resolveSyntxToken({
     apiKey: credentials?.apiKey,
     accessToken: credentials?.accessToken,
@@ -80,67 +156,16 @@ export async function handleSyntxVideoGeneration({
   }
 
   try {
-    const rawFiles = [
-      ...collectUrls(body.image),
-      ...collectUrls(body.image_url),
-      ...collectUrls(body.image_urls),
-      ...collectUrls(body.file_urls),
-    ];
-    const fileUrls: string[] = [];
-    for (const ref of rawFiles) {
-      if (ref.startsWith("data:")) {
-        const decoded = decodeDataUrl(ref);
-        if (!decoded) continue;
-        const url = await uploadSyntxMediaFile({
-          token,
-          bytes: decoded.bytes,
-          filename: decoded.name,
-          mimeType: decoded.mime,
-          fetchImpl,
-        });
-        if (url) fileUrls.push(url);
-      } else if (/^https?:\/\//i.test(ref)) {
-        fileUrls.push(ref);
-      }
-    }
-
-    const { aiName, modelType } = resolveSyntxMediaTarget(model, "video");
-    const settings = mapSyntxVideoRequestSettings(aiName, modelType, body);
-
-    const result = await runSyntxVideoGeneration({
+    return await runSyntxVideoJob({
       token,
       model,
+      provider,
+      body,
       prompt,
-      settings,
-      fileUrls: fileUrls.length > 0 ? fileUrls : undefined,
-      audioUrl: typeof body.audio_url === "string" ? body.audio_url : undefined,
-      timeoutMs: typeof body.timeout_ms === "number" ? body.timeout_ms : undefined,
+      startTime,
+      log,
       fetchImpl,
     });
-    const url = firstMediaUrl(result, "video") || result.media[0]?.url;
-    if (!url) {
-      return { success: false, status: 502, error: "SYNTX video generation completed without a video URL" };
-    }
-
-    const wantsBase64 = String(body.response_format || "").toLowerCase() === "b64_json";
-    const item = wantsBase64
-      ? { b64_json: (await fetchSyntxMediaBytes(url, fetchImpl)).bytes.toString("base64"), format: "mp4" }
-      : { url, format: "mp4" };
-
-    saveCallLog({
-      method: "POST",
-      path: "/v1/videos/generations",
-      status: 200,
-      model: `${provider}/${model}`,
-      provider,
-      duration: Date.now() - startTime,
-    }).catch(() => {});
-
-    log?.info?.("VIDEO", `SYNTX generated video via ${model}`);
-    return {
-      success: true,
-      data: { created: Math.floor(Date.now() / 1000), data: [item] },
-    };
   } catch (error) {
     const status = error instanceof SyntxMediaError ? error.status : 502;
     const message = sanitizeErrorMessage(error instanceof Error ? error.message : error);

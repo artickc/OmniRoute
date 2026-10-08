@@ -75,72 +75,103 @@ function dropAll(settings: JsonRecord, keys: string[]): void {
  * SPA pre-processor rules from syntx-ai-mcp `resources/provider-rules.ts`.
  * Mutates `settings` in place after the caller merge.
  */
+function applyGrokVideoRules(modelType: string, settings: JsonRecord): void {
+  if (modelType === "grok_i2v") drop(settings, "aspect_ratio");
+  if (modelType === "grok_v2v") dropAll(settings, ["aspect_ratio", "video_duration", "resolution"]);
+}
+
+function applyGrokImageRules(modelType: string, fileCount: number, settings: JsonRecord): void {
+  if (modelType === "grok_i2i_pro") drop(settings, "aspect_ratio");
+  else if (modelType === "grok_i2i" && fileCount < 2) drop(settings, "aspect_ratio");
+}
+
+function applyIdeogramRules(settings: JsonRecord): void {
+  if (settings.mode === "upscale") drop(settings, "aspect_ratio");
+  if (settings.mode === "describe") {
+    dropAll(settings, [
+      "aspect_ratio",
+      "quality",
+      "details_quality",
+      "seed",
+      "style",
+      "version",
+      "negative_prompt",
+      "enhance",
+      "rendering_speed",
+    ]);
+  }
+}
+
+function applySeedreamRules(modelType: string, settings: JsonRecord): void {
+  if (
+    (modelType === "seedream-4.5" || modelType === "seedream-5") &&
+    settings.resolution === "1K"
+  ) {
+    settings.resolution = "2K";
+  }
+  if (modelType === "seedream-5.0-pro" && settings.resolution === "4K") settings.resolution = "2K";
+}
+
+function applyKlingRules(modelType: string, _fileCount: number, settings: JsonRecord): void {
+  if (/^kling_o1_/.test(modelType)) drop(settings, "mode");
+}
+
+function applyRunwayRules(modelType: string, _fileCount: number, settings: JsonRecord): void {
+  if (modelType === "acttwo") drop(settings, "video_duration");
+}
+
+function applyLumaImageRules(_modelType: string, fileCount: number, settings: JsonRecord): void {
+  if (fileCount > 0 && settings.mode !== undefined) settings.mode = "auto";
+}
+
+function applyMidjourneyRules(_modelType: string, _fileCount: number, settings: JsonRecord): void {
+  if (settings.version === "8.1" || settings.version === "niji 7") drop(settings, "quality");
+}
+
+function applySoraImageRules(modelType: string, _fileCount: number, settings: JsonRecord): void {
+  if (modelType === "gpt-image-2") return;
+  drop(settings, "quality");
+  drop(settings, "details_quality");
+}
+
+function applyWanImageRules(modelType: string, fileCount: number, settings: JsonRecord): void {
+  if (modelType === "wan-2.7-pro" && fileCount > 0 && settings.resolution === "4K") {
+    settings.resolution = "2K";
+  }
+}
+
+function applySunoRules(_modelType: string, _fileCount: number, settings: JsonRecord): void {
+  if ((settings.mode ?? "generate") === "generate") {
+    dropAll(settings, ["audio_url", "continue_at", "source_clip_id", "source_task_id"]);
+  }
+}
+
+const PROVIDER_RULES: Record<
+  string,
+  (modelType: string, fileCount: number, settings: JsonRecord) => void
+> = {
+  grok_video: (modelType, _fileCount, settings) => applyGrokVideoRules(modelType, settings),
+  kling: applyKlingRules,
+  runway: applyRunwayRules,
+  grok_image: applyGrokImageRules,
+  ideogram: (_modelType, _fileCount, settings) => applyIdeogramRules(settings),
+  luma_image: applyLumaImageRules,
+  midjourney: applyMidjourneyRules,
+  "runway-frames": (_modelType, _fileCount, settings) => drop(settings, "style"),
+  seedream: (modelType, _fileCount, settings) => applySeedreamRules(modelType, settings),
+  "sora-images": applySoraImageRules,
+  wan_image: applyWanImageRules,
+  suno: applySunoRules,
+};
+
 export function applySyntxProviderRules(
   aiName: string,
   settings: JsonRecord,
   ctx: { modelType: string; fileCount?: number }
 ): void {
-  const modelType = ctx.modelType || "";
-  const fileCount = ctx.fileCount ?? 0;
-
-  if (aiName === "grok_video") {
-    if (modelType === "grok_i2v") drop(settings, "aspect_ratio");
-    if (modelType === "grok_v2v")
-      dropAll(settings, ["aspect_ratio", "video_duration", "resolution"]);
-  }
-  if (aiName === "kling" && /^kling_o1_/.test(modelType)) drop(settings, "mode");
-  if (aiName === "runway" && modelType === "acttwo") drop(settings, "video_duration");
-  if (aiName === "grok_image") {
-    if (modelType === "grok_i2i_pro") drop(settings, "aspect_ratio");
-    else if (modelType === "grok_i2i" && fileCount < 2) drop(settings, "aspect_ratio");
-  }
-  if (aiName === "ideogram") {
-    if (settings.mode === "upscale") drop(settings, "aspect_ratio");
-    if (settings.mode === "describe") {
-      dropAll(settings, [
-        "aspect_ratio",
-        "quality",
-        "details_quality",
-        "seed",
-        "style",
-        "version",
-        "negative_prompt",
-        "enhance",
-        "rendering_speed",
-      ]);
-    }
-  }
-  if (aiName === "luma_image" && fileCount > 0 && settings.mode !== undefined)
-    settings.mode = "auto";
-  if (aiName === "midjourney" && (settings.version === "8.1" || settings.version === "niji 7")) {
-    drop(settings, "quality");
-  }
-  if (aiName === "runway-frames") drop(settings, "style");
-  if (aiName === "seedream") {
-    if (
-      (modelType === "seedream-4.5" || modelType === "seedream-5") &&
-      settings.resolution === "1K"
-    ) {
-      settings.resolution = "2K";
-    }
-    if (modelType === "seedream-5.0-pro" && settings.resolution === "4K")
-      settings.resolution = "2K";
-  }
-  if (aiName === "sora-images" && modelType !== "gpt-image-2") {
-    drop(settings, "quality");
-    drop(settings, "details_quality");
-  }
-  if (
-    aiName === "wan_image" &&
-    modelType === "wan-2.7-pro" &&
-    fileCount > 0 &&
-    settings.resolution === "4K"
-  ) {
-    settings.resolution = "2K";
-  }
-  if (aiName === "suno" && (settings.mode ?? "generate") === "generate") {
-    dropAll(settings, ["audio_url", "continue_at", "source_clip_id", "source_task_id"]);
-  }
+  const handler = PROVIDER_RULES[aiName];
+  if (!handler) return;
+  handler(ctx.modelType || "", ctx.fileCount ?? 0, settings);
 }
 
 const RESOLUTION_TOKEN = /^(?:\d+x\d+|\d+K|[1-9]\d{1,3}p)$/i;
@@ -282,19 +313,13 @@ export function collectSyntxCompletedMedia(message: unknown): {
   };
 }
 
-function extractUrlsDeep(value: unknown, into: SyntxMediaItem[], kindHint: string): void {
-  if (!value) return;
-  if (typeof value === "string") {
-    if (/^https?:\/\//i.test(value) && !value.includes("syntx.ai/api/")) {
-      into.push({ objectType: kindHint, url: value });
-    }
-    return;
+function pushHttpUrl(value: string, into: SyntxMediaItem[], kindHint: string): void {
+  if (/^https?:\/\//i.test(value) && !value.includes("syntx.ai/api/")) {
+    into.push({ objectType: kindHint, url: value });
   }
-  if (Array.isArray(value)) {
-    for (const item of value) extractUrlsDeep(item, into, kindHint);
-    return;
-  }
-  const rec = asRecord(value);
+}
+
+function extractUrlsFromRecord(rec: JsonRecord, into: SyntxMediaItem[], kindHint: string): void {
   const preferred = [
     "object_url",
     "url",
@@ -313,6 +338,19 @@ function extractUrlsDeep(value: unknown, into: SyntxMediaItem[], kindHint: strin
   for (const nested of Object.values(rec)) {
     if (nested && typeof nested === "object") extractUrlsDeep(nested, into, kindHint);
   }
+}
+
+function extractUrlsDeep(value: unknown, into: SyntxMediaItem[], kindHint: string): void {
+  if (!value) return;
+  if (typeof value === "string") {
+    pushHttpUrl(value, into, kindHint);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) extractUrlsDeep(item, into, kindHint);
+    return;
+  }
+  extractUrlsFromRecord(asRecord(value), into, kindHint);
 }
 
 async function syntxJson(
@@ -423,6 +461,32 @@ export async function uploadSyntxMediaFile(options: {
   return url || null;
 }
 
+function messagesFromPollJson(json: unknown): unknown[] {
+  const rec = asRecord(json);
+  if (Array.isArray(rec.messages)) return rec.messages as unknown[];
+  if (Array.isArray(json)) return json;
+  return [];
+}
+
+async function pollSyntxChatOnce(
+  fetchImpl: FetchImpl,
+  options: { token: string; chatUuid: string }
+): Promise<SyntxGenerateResult | { status: number }> {
+  const { status, json } = await syntxJson(
+    fetchImpl,
+    options.token,
+    "GET",
+    `${SYNTX_API_BASE}/api/v1/chats/${options.chatUuid}/messages?page_size=50`
+  );
+  if (status < 200 || status >= 300) return { status };
+  const assistants = messagesFromPollJson(json).filter((item) => asRecord(item).author_id === -1);
+  const latest = assistants[assistants.length - 1];
+  if (!latest) return { status: 200 };
+  const projection = collectSyntxCompletedMedia(latest);
+  if (!projection.ready) return { status: 200 };
+  return { chatUuid: options.chatUuid, text: projection.text, media: projection.media };
+}
+
 export async function pollSyntxChatMedia(options: {
   token: string;
   chatUuid: string;
@@ -440,36 +504,17 @@ export async function pollSyntxChatMedia(options: {
 
   while (true) {
     if (options.signal?.aborted) throw new SyntxMediaError("SYNTX media wait cancelled", 499);
-    const elapsed = Date.now() - start;
-    if (elapsed > timeout) {
+    if (Date.now() - start > timeout) {
       throw new SyntxMediaError(`Timeout waiting for SYNTX media in chat ${options.chatUuid}`, 504);
     }
-    const { status, json } = await syntxJson(
-      fetchImpl,
-      options.token,
-      "GET",
-      `${SYNTX_API_BASE}/api/v1/chats/${options.chatUuid}/messages?page_size=50`
-    );
-    if (status < 200 || status >= 300) {
+    const tick = await pollSyntxChatOnce(fetchImpl, options);
+    if ("media" in tick) return tick;
+    if (tick.status < 200 || tick.status >= 300) {
       errors += 1;
-      if (errors >= 5) {
-        throw new SyntxMediaError(`SYNTX poll messages HTTP ${status}`, status);
-      }
+      if (errors >= 5)
+        throw new SyntxMediaError(`SYNTX poll messages HTTP ${tick.status}`, tick.status);
     } else {
       errors = 0;
-      const messages = Array.isArray(asRecord(json).messages)
-        ? (asRecord(json).messages as unknown[])
-        : Array.isArray(json)
-          ? json
-          : [];
-      const assistants = messages.filter((item) => asRecord(item).author_id === -1);
-      const latest = assistants[assistants.length - 1];
-      if (latest) {
-        const projection = collectSyntxCompletedMedia(latest);
-        if (projection.ready) {
-          return { chatUuid: options.chatUuid, text: projection.text, media: projection.media };
-        }
-      }
     }
     await new Promise((resolve) => setTimeout(resolve, interval));
     interval = Math.min(maxInterval, Math.floor(interval * 1.5));

@@ -58,11 +58,118 @@ function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; mime: string; name
   try {
     const mime = match[1] || "image/png";
     const bytes = Buffer.from(match[2], "base64");
-    const ext = mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+    const ext =
+      mime.includes("jpeg") || mime.includes("jpg")
+        ? "jpg"
+        : mime.includes("webp")
+          ? "webp"
+          : "png";
     return { bytes, mime, name: `reference.${ext}` };
   } catch {
     return null;
   }
+}
+
+async function uploadOneImageRef(
+  token: string,
+  ref: string,
+  fetchImpl: typeof fetch
+): Promise<string | null> {
+  if (ref.startsWith("https://r2.syntx.ai/") || /^https?:\/\//i.test(ref)) return ref;
+  if (!ref.startsWith("data:")) return null;
+  const decoded = decodeDataUrl(ref);
+  if (!decoded) return null;
+  return uploadSyntxMediaFile({
+    token,
+    bytes: decoded.bytes,
+    filename: decoded.name,
+    mimeType: decoded.mime,
+    fetchImpl,
+  });
+}
+
+async function collectUploadedImageRefs(
+  token: string,
+  body: ImageBody,
+  fetchImpl: typeof fetch
+): Promise<string[]> {
+  const uploaded: string[] = [];
+  for (const ref of extractReferenceImages(body)) {
+    const url = await uploadOneImageRef(token, ref, fetchImpl);
+    if (url) uploaded.push(url);
+  }
+  return uploaded;
+}
+
+async function imagesFromUrls(
+  urls: string[],
+  wantsBase64: boolean,
+  fetchImpl: typeof fetch
+): Promise<Array<Record<string, unknown>>> {
+  const images: Array<Record<string, unknown>> = [];
+  for (const url of urls) {
+    if (wantsBase64) {
+      const fetched = await fetchSyntxMediaBytes(url, fetchImpl);
+      images.push({ b64_json: fetched.bytes.toString("base64") });
+    } else {
+      images.push({ url });
+    }
+  }
+  return images;
+}
+
+async function runSyntxImageJob(options: {
+  token: string;
+  model: string;
+  provider: string;
+  body: ImageBody;
+  prompt: string;
+  startTime: number;
+  log?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
+  fetchImpl: typeof fetch;
+}) {
+  const uploaded = await collectUploadedImageRefs(options.token, options.body, options.fetchImpl);
+  const { aiName, modelType } = resolveSyntxMediaTarget(options.model, "image");
+  const settings = mapSyntxImageRequestSettings(
+    aiName,
+    modelType,
+    options.body as Record<string, unknown>
+  );
+  if (uploaded.length > 0) settings.image_url = uploaded;
+  const result = await runSyntxImageGeneration({
+    token: options.token,
+    model: options.model,
+    prompt: options.prompt,
+    settings,
+    timeoutMs: typeof options.body.timeout_ms === "number" ? options.body.timeout_ms : undefined,
+    fetchImpl: options.fetchImpl,
+  });
+  const urls = result.media.map((item) => item.url).filter(Boolean);
+  if (urls.length === 0) {
+    const fallback = firstMediaUrl(result, "image");
+    if (!fallback) {
+      return saveImageErrorResult({
+        provider: options.provider,
+        model: options.model,
+        status: 502,
+        startTime: options.startTime,
+        error: "SYNTX image generation completed without an image URL",
+      });
+    }
+    urls.push(fallback);
+  }
+  const images = await imagesFromUrls(
+    urls,
+    String(options.body.response_format || "").toLowerCase() === "b64_json",
+    options.fetchImpl
+  );
+  options.log?.info?.("IMAGE", `SYNTX generated ${images.length} image(s) via ${options.model}`);
+  return saveImageSuccessResult({
+    provider: options.provider,
+    model: options.model,
+    startTime: options.startTime,
+    images,
+  });
 }
 
 export async function handleSyntxImageGeneration({
@@ -96,7 +203,6 @@ export async function handleSyntxImageGeneration({
       error: "Prompt is required for SYNTX image generation",
     });
   }
-
   const token = resolveSyntxToken({
     apiKey: credentials?.apiKey,
     accessToken: credentials?.accessToken,
@@ -111,76 +217,16 @@ export async function handleSyntxImageGeneration({
       error: "Missing SYNTX JWT — paste the Authorization Bearer token from syntx.ai",
     });
   }
-
   try {
-    const references = extractReferenceImages(body);
-    const uploaded: string[] = [];
-    for (const ref of references) {
-      if (ref.startsWith("https://r2.syntx.ai/")) {
-        uploaded.push(ref);
-        continue;
-      }
-      if (ref.startsWith("data:")) {
-        const decoded = decodeDataUrl(ref);
-        if (!decoded) continue;
-        const url = await uploadSyntxMediaFile({
-          token,
-          bytes: decoded.bytes,
-          filename: decoded.name,
-          mimeType: decoded.mime,
-          fetchImpl,
-        });
-        if (url) uploaded.push(url);
-        continue;
-      }
-      if (/^https?:\/\//i.test(ref)) uploaded.push(ref);
-    }
-
-    const { aiName, modelType } = resolveSyntxMediaTarget(model, "image");
-    const settings = mapSyntxImageRequestSettings(aiName, modelType, body as Record<string, unknown>);
-    if (uploaded.length > 0) settings.image_url = uploaded;
-
-    const timeoutMs = typeof body.timeout_ms === "number" ? body.timeout_ms : undefined;
-    const result = await runSyntxImageGeneration({
+    return await runSyntxImageJob({
       token,
       model,
-      prompt,
-      settings,
-      timeoutMs,
-      fetchImpl,
-    });
-    const urls = result.media.map((item) => item.url).filter(Boolean);
-    if (urls.length === 0) {
-      const fallback = firstMediaUrl(result, "image");
-      if (!fallback) {
-        return saveImageErrorResult({
-          provider,
-          model,
-          status: 502,
-          startTime,
-          error: "SYNTX image generation completed without an image URL",
-        });
-      }
-      urls.push(fallback);
-    }
-
-    const wantsBase64 = String(body.response_format || "").toLowerCase() === "b64_json";
-    const images: Array<Record<string, unknown>> = [];
-    for (const url of urls) {
-      if (wantsBase64) {
-        const fetched = await fetchSyntxMediaBytes(url, fetchImpl);
-        images.push({ b64_json: fetched.bytes.toString("base64") });
-      } else {
-        images.push({ url });
-      }
-    }
-
-    log?.info?.("IMAGE", `SYNTX generated ${images.length} image(s) via ${model}`);
-    return saveImageSuccessResult({
       provider,
-      model,
+      body,
+      prompt,
       startTime,
-      images,
+      log,
+      fetchImpl,
     });
   } catch (error) {
     const status = error instanceof SyntxMediaError ? error.status : 502;
