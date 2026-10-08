@@ -59,6 +59,7 @@
       "tests/unit/stream-stall-no-account-cooldown.test.ts",
       "tests/unit/claude-passthrough-unsigned-thinking-12917.test.ts",
       "tests/unit/combo-error-code-terminal.test.ts",
+      "tests/unit/combo-protected-stop-diagnostics.test.ts",
       "tests/unit/model-validation-runner.test.ts",
       "tests/unit/model-concurrency-gate.test.ts",
       "tests/unit/bare-403-neutral.test.ts",
@@ -599,7 +600,9 @@
       "tests/unit/version-manager-local-only.test.ts",
       "tests/unit/stream-failure-after-output-no-model-lockout.test.ts",
       "tests/unit/db-proxies-ventilated.test.ts",
-      "tests/unit/github-copilot-model-not-supported-learning-15634.test.ts"
+      "tests/unit/github-copilot-model-not-supported-learning-15634.test.ts",
+      "tests/unit/alibaba-free-quota-drain-preserves-model-catalog-cache.test.ts",
+      "tests/unit/upstreamErrorEnvelope.test.ts"
     ],
     "nodeArgs": [
       "--import",
