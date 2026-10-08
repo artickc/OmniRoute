@@ -134,6 +134,8 @@ const lazyExecutors: Record<string, () => Promise<BaseExecutor>> = {
     import("./tencent-aistudio-web.ts").then((m) => new m.TencentAIStudioWebExecutor()),
   tasw: () => import("./tencent-aistudio-web.ts").then((m) => new m.TencentAIStudioWebExecutor()), // Alias
   ybw: () => import("./yuanbao-web.ts").then((m) => new m.YuanbaoWebExecutor()), // Alias
+  "notrack-web": () => import("./notrack-web.ts").then((m) => new m.NotrackWebExecutor()),
+  ntw: () => import("./notrack-web.ts").then((m) => new m.NotrackWebExecutor()), // Alias
   "poe-web": () => import("./poe-web.ts").then((m) => new m.PoeWebExecutor()),
   // #8969: do NOT alias canonical `poe` (API-key / api.poe.com) to PoeWebExecutor.
   // Registry declares executor:"default"; the hard-coded map previously won and
@@ -184,6 +186,9 @@ const lazyExecutors: Record<string, () => Promise<BaseExecutor>> = {
   cnl: () => import("./conol-web.ts").then((m) => new m.ConolWebExecutor()), // Alias
   syntx: () => import("./syntx.ts").then((m) => new m.SyntxExecutor()),
   stx: () => import("./syntx.ts").then((m) => new m.SyntxExecutor()), // Alias
+  chatplayground: () => import("./chatplayground.ts").then((m) => new m.ChatPlaygroundExecutor()),
+  cpl: () =>
+    import("./chatplayground.ts").then((m) => new m.ChatPlaygroundExecutor("chatplayground")), // Alias
 };
 
 // Bootstrap: declare every built-in alias in the ExecutorRegistry. Duplicate

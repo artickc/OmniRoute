@@ -1,8 +1,9 @@
-/**
- * APIKEY provider catalog — gateways family (aggregators, multi-model routers & API marketplaces).
- * Pure data; merged by apikey/index.ts via spread (god-file decomposition; semantic split).
- */
+import { onomeoGateway } from "./onomeo";
+import { unificallyGateway } from "./unifically";
+/** APIKEY provider catalog — gateways family. Pure data; merged by apikey/index.ts via spread. */
 export const APIKEY_PROVIDERS_GATEWAYS = {
+  ...onomeoGateway,
+  ...unificallyGateway,
   // 1min.ai (https://docs.1min.ai) — multi-model chat aggregator with its own
   // custom API (single `prompt` string + real SSE, not OpenAI-compatible).
   // OmniRoute's oneminai executor translates both directions.
@@ -48,10 +49,10 @@ export const APIKEY_PROVIDERS_GATEWAYS = {
     website: "https://freebuff.com",
     hasFree: true,
     serviceKinds: ["llm"],
-    authHint:
-      "Enter Freebuff / Codebuff Auth Token (obtained via CLI login or automated harvester).",
-    freeNote: "Free Codebuff / Freebuff AI models.",
-    apiHint: "Token is authenticated against Codebuff upstream session pool.",
+    subscriptionRisk: true,
+    riskNoticeVariant: "official-client-only",
+    authHint: "Enter your Freebuff / Codebuff auth token from the CLI login.",
+    freeNote: "Free Freebuff models (official client only); paid API: freebuff.com/account/api.",
     passthroughModels: true,
   },
   "charm-hyper": {

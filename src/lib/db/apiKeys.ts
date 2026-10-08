@@ -1530,18 +1530,23 @@ export async function getApiKeyMetadata(
  */
 export async function isModelAllowedForKey(
   key: string | null | undefined,
-  modelId: string | null | undefined
-) {
+  modelId: string | null | undefined,
+  resolvedModelId?: string | null
+): Promise<boolean> {
   // If no key provided, allow (request may be using different auth method like JWT)
   // If no modelId provided, deny (invalid request)
   if (!key) return true;
   if (!modelId) return false;
 
   // Create cache key
-  const cacheKey = `${key}:${modelId}`;
+  const cacheKey = resolvedModelId
+    ? JSON.stringify([key, modelId, resolvedModelId])
+    : `${key}:${modelId}`;
   const now = Date.now();
   const catalogGeneration = getModelCatalogCacheVersion();
-  const usesSettingDependentClaudeRouting = isPotentialUnprefixedClaudeCodeModel(modelId);
+  const usesSettingDependentClaudeRouting =
+    isPotentialUnprefixedClaudeCodeModel(modelId) ||
+    (typeof resolvedModelId === "string" && isPotentialUnprefixedClaudeCodeModel(resolvedModelId));
 
   // Check permission cache
   const cached = getCachedModelPermission(cacheKey, now, catalogGeneration);
@@ -1554,7 +1559,14 @@ export async function isModelAllowedForKey(
   if (!metadata) return false;
 
   const { modelAccessMode, allowedModels, blockedModels, disableNonPublicModels } = metadata;
-  const modelPermissionCandidates = await getModelPermissionCandidates(modelId);
+  // Preserve requested aliases for allow-list matching while applying resolved
+  // target candidates to deny rules and group access checks.
+  const modelPermissionCandidates = Array.from(
+    new Set([
+      ...(await getModelPermissionCandidates(modelId)),
+      ...(resolvedModelId ? await getModelPermissionCandidates(resolvedModelId) : []),
+    ])
+  );
 
   // Deny-list patterns win over any allow-list entry. This lets operators keep
   // broad dynamic scopes like cc/* while excluding expensive families.
@@ -1564,10 +1576,12 @@ export async function isModelAllowedForKey(
 
   // Check disableNonPublicModels flag
   if (disableNonPublicModels) {
-    const resolvedModelId = resolveModelAlias(modelId);
-    const effectiveModelId = resolvedModelId || modelId;
+    const effectiveModelId = resolvedModelId || resolveModelAlias(modelId) || modelId;
+    const publicationCandidates = resolvedModelId
+      ? await getModelPermissionCandidates(resolvedModelId)
+      : modelPermissionCandidates;
 
-    if (!hasClaudeCodeWildcardPermission(allowedModels, modelPermissionCandidates)) {
+    if (!hasClaudeCodeWildcardPermission(allowedModels, publicationCandidates)) {
       const lookupTarget = await getPublishedModelLookupTarget(effectiveModelId);
       const providerOrAlias = lookupTarget?.providerId || effectiveModelId.split("/")[0];
       const shortModelId = lookupTarget?.modelId || effectiveModelId.split("/").slice(1).join("/");
@@ -1603,19 +1617,25 @@ export async function isModelAllowedForKey(
       ? modelAccessMode !== "restricted"
       : allowedModels.some((pattern) => modelPatternMatches(pattern, modelPermissionCandidates));
 
-  // Extract model target and optional provider prefix if present (e.g. "openai/gpt-4" -> modelTarget: "gpt-4", provider: "openai")
-  const hasProviderPrefix = modelId?.includes("/");
-  const provider = hasProviderPrefix ? modelId.split("/")[0] : undefined;
-  const modelTarget = hasProviderPrefix ? modelId.split("/").slice(1).join("/") : modelId || "";
-
-  // If key belongs to groups, check both modelTarget and full modelId against group rules
+  // Group rules must see the requested alias and the concrete target. An allowed
+  // alias cannot hide a resolved target denied by group policy.
   if (metadata.id) {
-    const targetOk = checkKeyModelAccess(metadata.id, modelTarget, provider).allowed;
-    const fullOk = checkKeyModelAccess(metadata.id, modelId || "", provider).allowed;
-    if (!targetOk || !fullOk) allowed = false;
+    for (const groupModelId of new Set([modelId, ...(resolvedModelId ? [resolvedModelId] : [])])) {
+      const hasGroupProviderPrefix = groupModelId.includes("/");
+      const groupProvider = hasGroupProviderPrefix ? groupModelId.split("/")[0] : undefined;
+      const groupModelTarget = hasGroupProviderPrefix
+        ? groupModelId.split("/").slice(1).join("/")
+        : groupModelId;
+      const targetOk = checkKeyModelAccess(metadata.id, groupModelTarget, groupProvider).allowed;
+      const fullOk = checkKeyModelAccess(metadata.id, groupModelId, groupProvider).allowed;
+      if (!targetOk || !fullOk) allowed = false;
 
-    if (allowed && (await isDeniedUnderCanonicalProvider(metadata.id, provider, modelTarget))) {
-      allowed = false;
+      if (
+        allowed &&
+        (await isDeniedUnderCanonicalProvider(metadata.id, groupProvider, groupModelTarget))
+      ) {
+        allowed = false;
+      }
     }
   }
   // Cache the result
