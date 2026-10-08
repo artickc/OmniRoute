@@ -661,6 +661,19 @@ function shouldContinueTwinmindToolLoop(
   return looksLikeTwinmindRefusal(lastText) || twinmindUserWantsLocalTools(bodyObj.messages);
 }
 
+const TWINMIND_SSE_HEADERS: Record<string, string> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+};
+
+/** 401 message when no usable Bearer JWT could be obtained (never echoes the token). */
+function twinmindMissingTokenMessage(hadRefreshToken: boolean): string {
+  return hadRefreshToken
+    ? "Twinmind Firebase refresh failed. Paste stsTokenManager JSON (accessToken + refreshToken) or a current Bearer JWT."
+    : "Missing Twinmind token — paste stsTokenManager JSON (accessToken + refreshToken) or a current Bearer JWT.";
+}
+
 function twinmindChatErrorResult(
   status: number,
   message: string,
@@ -903,7 +916,7 @@ export class TwinmindExecutor extends BaseExecutor {
       query,
       streamer ? (delta) => streamer.onDelta(delta) : undefined
     );
-    if ("errorResult" in result && result.errorResult) return { errorResult: result.errorResult };
+    if ("errorResult" in result) return { errorResult: result.errorResult };
     const lastText = result.text || "";
     streamer?.finish();
     const parsed = hasTools
@@ -1083,9 +1096,7 @@ export class TwinmindExecutor extends BaseExecutor {
       return {
         error: makeErrorResult(
           401,
-          ensured.refreshToken
-            ? "Twinmind Firebase refresh failed. Paste stsTokenManager JSON (accessToken + refreshToken) or a current Bearer JWT."
-            : "Missing Twinmind token — paste stsTokenManager JSON (accessToken + refreshToken) or a current Bearer JWT.",
+          twinmindMissingTokenMessage(Boolean(ensured.refreshToken)),
           body,
           TWINMIND_CHAT_URL
         ),
@@ -1094,7 +1105,7 @@ export class TwinmindExecutor extends BaseExecutor {
 
     return {
       ctx: {
-        body,
+        body: body as JsonRecord,
         modelId,
         signal,
         fetchImpl,
@@ -1110,11 +1121,7 @@ export class TwinmindExecutor extends BaseExecutor {
       id: `chatcmpl-twinmind-${Date.now()}`,
       created: Math.floor(Date.now() / 1000),
       clientModel: toStringOrEmpty(bodyObj.model) || requestedModel,
-      sseHeaders: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+      sseHeaders: { ...TWINMIND_SSE_HEADERS },
     };
   }
 

@@ -667,7 +667,7 @@ export async function GET(
       }
     }
 
-    const conolResponse = await maybeHandleConolModelDiscovery({
+    const webDiscoveryArgs = {
       provider,
       connectionId,
       apiKey,
@@ -679,22 +679,13 @@ export async function GET(
       buildDiscoveryFallbackResponse,
       buildResponse,
       buildApiDiscoveryResponse,
-    });
+    };
+    const conolResponse = await maybeHandleConolModelDiscovery(webDiscoveryArgs);
     if (conolResponse) return conolResponse;
 
     const twinmindResponse = await maybeHandleTwinmindModelDiscovery({
-      provider,
-      connectionId,
-      apiKey,
-      accessToken,
+      ...webDiscoveryArgs,
       refreshToken: (connection as { refreshToken?: unknown }).refreshToken,
-      providerSpecificData: connection.providerSpecificData,
-      proxy,
-      maybeReturnCachedDiscovery,
-      maybeReturnAutoFetchDisabled,
-      buildDiscoveryFallbackResponse,
-      buildResponse,
-      buildApiDiscoveryResponse,
     });
     if (twinmindResponse) return twinmindResponse;
 
