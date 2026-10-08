@@ -487,6 +487,24 @@ describe("SyntxExecutor", () => {
     assert.equal(result.quotas.weekly.resetAt, "2026-09-26T00:00:00.000Z");
   });
 
+  it("sanitizes a thrown usage fetch error (no token or stack in the message)", async () => {
+    const jwt = fakeJwt();
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error(
+        `connect failed Authorization: Bearer ${jwt}\n    at fetch (/srv/app/node_modules/undici/index.js:10:5)`
+      );
+    }) as typeof fetch;
+    try {
+      const result = (await usageLeaf.getSyntxUsage(jwt)) as { message?: string };
+      assert.match(String(result.message), /^SYNTX usage failed: /);
+      assert.ok(!String(result.message).includes(jwt), "usage error must not echo the JWT");
+      assert.ok(!String(result.message).includes("at /"), "usage error must not leak a stack");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("registers syntx in USAGE_FETCHER_PROVIDERS", () => {
     assert.ok(
       (usageMain.USAGE_FETCHER_PROVIDERS as readonly string[]).includes("syntx"),

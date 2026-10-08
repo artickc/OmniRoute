@@ -280,7 +280,7 @@ async function uploadSyntxBytes(
       "accept-language": headers["accept-language"],
       "content-type": encoded.contentType,
     },
-    body: encoded.body,
+    body: encoded.body as unknown as BodyInit, // Buffer is a valid undici body at runtime
   });
   if (!response.ok) return null;
   const json = asRecord(await response.json());

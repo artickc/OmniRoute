@@ -342,12 +342,17 @@ async function handleSyntxEditRequest(params: {
       `No credentials for provider: ${parsed.provider}`
     );
   }
-  if (credentials.allRateLimited) {
+  const rateLimit = credentials as {
+    allRateLimited?: boolean;
+    retryAfter?: string | number | Date | null;
+    retryAfterHuman?: string;
+  };
+  if (rateLimit.allRateLimited) {
     return unavailableResponse(
       HTTP_STATUS.RATE_LIMITED,
       `[${parsed.provider}] All accounts rate limited`,
-      credentials.retryAfter,
-      credentials.retryAfterHuman
+      rateLimit.retryAfter,
+      rateLimit.retryAfterHuman
     );
   }
 
@@ -369,7 +374,7 @@ async function handleSyntxEditRequest(params: {
       image: dataUrls.length === 1 ? dataUrls[0] : dataUrls,
       image_urls: dataUrls,
     },
-    credentials,
+    credentials: credentials as Parameters<typeof handleSyntxImageGeneration>[0]["credentials"],
     log,
   });
 
@@ -455,7 +460,11 @@ async function dispatchImageEditTarget(
   if (providerConfig?.format === "codex-responses") {
     const modelEntry = getImageModelEntry(modelStr);
     if (!modelEntry || modelEntry.provider !== "codex" || modelEntry.model !== parsed.model) {
-      return { success: false, status: HTTP_STATUS.BAD_REQUEST, error: `Unsupported Codex image edit model: ${modelStr}` };
+      return {
+        success: false,
+        status: HTTP_STATUS.BAD_REQUEST,
+        error: `Unsupported Codex image edit model: ${modelStr}`,
+      };
     }
     const imageValidationError = validateCodexImageEditReferences(images);
     if (imageValidationError) {
@@ -521,7 +530,11 @@ async function dispatchImageEditTarget(
   if (providerConfig?.format === "adobe-firefly-image") {
     const dataUrls = buildAdobeFireflyEditDataUrls(images, imageBytes, imageMime);
     if (dataUrls.length === 0) {
-      return { success: false, status: HTTP_STATUS.BAD_REQUEST, error: "Missing required field: image" };
+      return {
+        success: false,
+        status: HTTP_STATUS.BAD_REQUEST,
+        error: "Missing required field: image",
+      };
     }
     return (await handleAdobeFireflyImageGeneration({
       provider: parsed.provider,
@@ -545,7 +558,11 @@ async function dispatchImageEditTarget(
   if (providerConfig?.format === "syntx-image") {
     const dataUrls = buildAdobeFireflyEditDataUrls(images, imageBytes, imageMime);
     if (dataUrls.length === 0) {
-      return { success: false, status: HTTP_STATUS.BAD_REQUEST, error: "Missing required field: image" };
+      return {
+        success: false,
+        status: HTTP_STATUS.BAD_REQUEST,
+        error: "Missing required field: image",
+      };
     }
     return (await handleSyntxImageGeneration({
       provider: parsed.provider,

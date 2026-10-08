@@ -211,7 +211,9 @@ test("shared set size includes live REGISTRY and retired Designer + Felo + Qwen 
   // (two new members, 418 -> 420). Do not fold this into a generic catalog bump — the
   // dedicated notrack-web prefix test below is the regression lock for this provider.
   // Apmix (#14821) registers id "apmix" with the same alias — one more (420 -> 421).
-  assert.equal(RESERVED_PREFIX_COUNT, 424);
+  // SYNTX.ai (#14269) registers id "syntx" and alias "stx" — two more.
+  // Measured on the #14269 branch: RESERVED_PROVIDER_PREFIXES.size = 426.
+  assert.equal(RESERVED_PREFIX_COUNT, 426);
 });
 
 test("notrack-web registry id and alias stay reserved", () => {

@@ -7,6 +7,7 @@
  */
 import { SYNTX_API_BASE, looksLikeJwt, resolveSyntxToken, syntxAuthHeaders } from "../syntxAuth.ts";
 import { parseResetTime, type UsageQuota } from "./quota.ts";
+import { sanitizeErrorMessage } from "../../utils/error.ts";
 
 export type SyntxSubscription = {
   active?: unknown;
@@ -50,7 +51,10 @@ export function parseSyntxPercentLeft(raw: unknown): number {
 }
 
 /** Live `/llm/limits` often sends expires_at:null — derive the next window from started_at. */
-export function syntxWindowResetAt(window: Record<string, unknown>, durationMs: number): string | null {
+export function syntxWindowResetAt(
+  window: Record<string, unknown>,
+  durationMs: number
+): string | null {
   const expires = parseResetTime(window.expires_at ?? window.expiresAt);
   if (expires) return expires;
   const started = parseResetTime(window.started_at ?? window.startedAt);
@@ -60,7 +64,11 @@ export function syntxWindowResetAt(window: Record<string, unknown>, durationMs: 
   return new Date(t + durationMs).toISOString();
 }
 
-function percentQuota(percentLeft: unknown, resetAt: string | null, displayName: string): UsageQuota {
+function percentQuota(
+  percentLeft: unknown,
+  resetAt: string | null,
+  displayName: string
+): UsageQuota {
   const remaining = parseSyntxPercentLeft(percentLeft);
   const clamped = Math.max(0, Math.min(100, remaining));
   return {
@@ -139,7 +147,12 @@ export async function getSyntxUsage(
       }),
     ]);
 
-    if (subRes.status === 401 || subRes.status === 403 || limRes.status === 401 || limRes.status === 403) {
+    if (
+      subRes.status === 401 ||
+      subRes.status === 403 ||
+      limRes.status === 401 ||
+      limRes.status === 403
+    ) {
       return { message: "SYNTX JWT expired or is invalid. Paste a fresh token from syntx.ai." };
     }
     if (!subRes.ok) return { message: `SYNTX subscription failed (HTTP ${subRes.status})` };
@@ -150,7 +163,7 @@ export async function getSyntxUsage(
     return buildSyntxUsageResult(subscription, limits);
   } catch (error) {
     return {
-      message: `SYNTX usage failed: ${error instanceof Error ? error.message : String(error)}`,
+      message: `SYNTX usage failed: ${sanitizeErrorMessage(error instanceof Error ? error.message : String(error))}`,
     };
   }
 }

@@ -981,7 +981,7 @@ export async function handleAudioTranscription({
   if (providerConfig.format === "syntx-audio") {
     return handleSyntxTranscription({
       model: modelId as string,
-      file,
+      file: file as Blob & { name?: string },
       credentials,
     });
   }
