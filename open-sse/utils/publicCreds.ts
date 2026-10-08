@@ -197,6 +197,8 @@ const EMBEDDED_DEFAULTS = {
     46, 36, 20, 8, 33, 22, 49, 70, 54, 73, 47, 59, 50, 95, 31, 34, 25, 4, 70, 25, 2, 28, 6, 57, 30,
     49, 17, 3, 93, 40, 47, 7, 47, 36, 39, 117, 21, 120, 62,
   ],
+  // Muse Code CLI — Meta public OAuth client id (device grant, no secret).
+  muse_id: [94, 93, 93, 88, 68, 93, 64, 77, 80, 31, 71, 65, 90, 85, 93, 85],
 } as const;
 
 export type EmbeddedDefaultKey = keyof typeof EMBEDDED_DEFAULTS;
