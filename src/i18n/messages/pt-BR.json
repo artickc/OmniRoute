@@ -1914,6 +1914,9 @@
   "analytics": {
     "title": "Análises",
     "usageAnalyticsTitle": "Análise de Uso",
+    "tokenDisplayCompact": "Compacto",
+    "tokenDisplayExact": "Exato",
+    "tokenDisplayMode": "Modo de exibição de tokens",
     "diversityScoreTitle": "Diversidade de Provedores",
     "diversityScoreDesc": "Instantâneo da concentração de provedores para a janela de tráfego recente.",
     "diversityShannonEntropy": "Entropia de Shannon",
@@ -5572,6 +5575,8 @@
     "modelsActive": "ativos",
     "showModel": "Mostrar modelo",
     "hideModel": "Ocultar modelo",
+    "blacklistModel": "Bloquear",
+    "blacklistModelTooltip": "Bloquear este modelo e ocultá-lo do catálogo",
     "removeModel": "Remover modelo",
     "rateLimitProtected": "Protegido",
     "rateLimitUnprotected": "Desprotegido",
@@ -6710,7 +6715,14 @@
     "rateLimitOverridesModelConcurrencyLabel": "Per-model concurrency caps",
     "rateLimitOverridesModelConcurrencyPlaceholder": "glm-5=1\nglm-4.7=3",
     "rateLimitOverridesModelConcurrencyHint": "Optional: one model=cap per line, matched against the exact upstream model id. Queues excess requests locally; blank means no per-model cap.",
-    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}."
+    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}.",
+    "codexPaidCreditsShort": "Créditos extras",
+    "codexPaidCreditsToggleTitle": "Permitir créditos pagos do Codex após o esgotamento da cota da assinatura (cobranças adicionais podem ser aplicadas)",
+    "codexPaidCreditsEnabled": "Créditos pagos do Codex habilitados (cobranças adicionais podem ser aplicadas)",
+    "codexPaidCreditsDisabled": "Créditos pagos do Codex desabilitados",
+    "failedUpdateCodexPaidCredits": "Falha ao atualizar a política de créditos pagos do Codex",
+    "allowCodexPaidCreditsLabel": "Permitir créditos pagos do Codex",
+    "allowCodexPaidCreditsDescription": "Permite que esta conta use créditos pagos depois que a cota da assinatura atingir o limite de corte. Requer créditos disponíveis informados pela OpenAI; pode gerar cobranças. Os limites do Spark e os cooldowns do upstream continuam se aplicando. A disponibilidade de créditos é verificada mesmo se o preflight de cota estiver desabilitado."
   },
   "settings": {
     "title": "Configurações",
@@ -10093,7 +10105,11 @@
     "updatedShort": "Atualizado",
     "lastRefreshed": "Última atualização",
     "providerQuota": "Cota do Provedor",
-    "providerQuotaHomeHint": "Status em tempo real nas contas conectadas"
+    "providerQuotaHomeHint": "Status em tempo real nas contas conectadas",
+    "codexPaidCreditsLabel": "Créditos pagos do Codex",
+    "codexPaidCreditsAvailable": "Disponível (saldo não informado)",
+    "codexPaidCreditsUnavailable": "Indisponível ou limite de gastos atingido",
+    "codexPaidCreditsUnlimited": "Ilimitado"
   },
   "modals": {
     "waitingAuth": "Aguardando Autorização",

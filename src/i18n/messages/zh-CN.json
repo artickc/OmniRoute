@@ -1914,6 +1914,9 @@
   "analytics": {
     "title": "分析",
     "usageAnalyticsTitle": "用量分析",
+    "tokenDisplayCompact": "紧凑",
+    "tokenDisplayExact": "精确",
+    "tokenDisplayMode": "Token 显示模式",
     "diversityScoreTitle": "供应商多元化",
     "diversityScoreDesc": "近期流量窗口内提供者集中度的快照。",
     "diversityShannonEntropy": "香农熵",
@@ -5572,6 +5575,8 @@
     "modelsActive": "已启用",
     "showModel": "显示模型",
     "hideModel": "隐藏模型",
+    "blacklistModel": "拉黑",
+    "blacklistModelTooltip": "将此模型拉黑并从目录中隐藏",
     "removeModel": "删除模型",
     "rateLimitProtected": "受保护",
     "rateLimitUnprotected": "无保护",
@@ -6710,7 +6715,14 @@
     "rateLimitOverridesModelConcurrencyLabel": "Per-model concurrency caps",
     "rateLimitOverridesModelConcurrencyPlaceholder": "glm-5=1\nglm-4.7=3",
     "rateLimitOverridesModelConcurrencyHint": "Optional: one model=cap per line, matched against the exact upstream model id. Queues excess requests locally; blank means no per-model cap.",
-    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}."
+    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}.",
+    "codexPaidCreditsShort": "Extra credits",
+    "codexPaidCreditsToggleTitle": "Allow paid Codex credits after subscription quota runs out (additional charges may apply)",
+    "codexPaidCreditsEnabled": "Codex paid credits enabled (additional charges may apply)",
+    "codexPaidCreditsDisabled": "Codex paid credits disabled",
+    "failedUpdateCodexPaidCredits": "Failed to update Codex paid-credit policy",
+    "allowCodexPaidCreditsLabel": "Allow paid Codex credits",
+    "allowCodexPaidCreditsDescription": "Allow this account to use paid credits after its subscription quota reaches the cutoff. Requires available credits reported by OpenAI; may incur charges. Spark limits and upstream cooldowns still apply. Credit availability is checked even if quota preflight is disabled."
   },
   "settings": {
     "title": "设置",
@@ -10093,7 +10105,11 @@
     "updatedShort": "更新于",
     "lastRefreshed": "上次刷新",
     "providerQuota": "提供者配额",
-    "providerQuotaHomeHint": "已连接账户的实时状态"
+    "providerQuotaHomeHint": "已连接账户的实时状态",
+    "codexPaidCreditsLabel": "Paid Codex credits",
+    "codexPaidCreditsAvailable": "Available (balance not reported)",
+    "codexPaidCreditsUnavailable": "Unavailable or spending limit reached",
+    "codexPaidCreditsUnlimited": "Unlimited"
   },
   "modals": {
     "waitingAuth": "等待授权",

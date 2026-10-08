@@ -1914,6 +1914,9 @@
   "analytics": {
     "title": "વિશ્લેષણ",
     "usageAnalyticsTitle": "વપરાશ એનાલિટિક્સ",
+    "tokenDisplayCompact": "સંક્ષિપ્ત",
+    "tokenDisplayExact": "ચોક્કસ",
+    "tokenDisplayMode": "ટોકન પ્રદર્શન મોડ",
     "diversityScoreTitle": "પ્રદાતા વિવિધતા",
     "diversityScoreDesc": "તાજેતરના ટ્રાફિક વિન્ડો માટે પ્રોવાઇડર કોન્સન્ટ્રેશન સ્નેપશોટ.",
     "diversityShannonEntropy": "શેનન એન્ટ્રોપી",
@@ -5572,6 +5575,8 @@
     "modelsActive": "સક્રિય",
     "showModel": "મોડેલ બતાવો",
     "hideModel": "મોડેલ છુપાવો",
+    "blacklistModel": "બ્લોક",
+    "blacklistModelTooltip": "આ મોડેલને બ્લોક કરી કેટલોગમાંથી છુપાવો",
     "removeModel": "મોડેલ દૂર કરો",
     "rateLimitProtected": "સુરક્ષિત",
     "rateLimitUnprotected": "અસુરક્ષિત",
@@ -6710,7 +6715,14 @@
     "rateLimitOverridesModelConcurrencyLabel": "Per-model concurrency caps",
     "rateLimitOverridesModelConcurrencyPlaceholder": "glm-5=1\nglm-4.7=3",
     "rateLimitOverridesModelConcurrencyHint": "Optional: one model=cap per line, matched against the exact upstream model id. Queues excess requests locally; blank means no per-model cap.",
-    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}."
+    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}.",
+    "codexPaidCreditsShort": "Extra credits",
+    "codexPaidCreditsToggleTitle": "Allow paid Codex credits after subscription quota runs out (additional charges may apply)",
+    "codexPaidCreditsEnabled": "Codex paid credits enabled (additional charges may apply)",
+    "codexPaidCreditsDisabled": "Codex paid credits disabled",
+    "failedUpdateCodexPaidCredits": "Failed to update Codex paid-credit policy",
+    "allowCodexPaidCreditsLabel": "Allow paid Codex credits",
+    "allowCodexPaidCreditsDescription": "Allow this account to use paid credits after its subscription quota reaches the cutoff. Requires available credits reported by OpenAI; may incur charges. Spark limits and upstream cooldowns still apply. Credit availability is checked even if quota preflight is disabled."
   },
   "settings": {
     "title": "સેટિંગ્સ",
@@ -10093,7 +10105,11 @@
     "updatedShort": "અપડેટ કરેલ",
     "lastRefreshed": "છેલ્લે રિફ્રેશ કરેલ",
     "providerQuota": "પ્રદાતા ક્વોટા",
-    "providerQuotaHomeHint": "કનેક્ટેડ એકાઉન્ટ્સમાં લાઇવ સ્થિતિ"
+    "providerQuotaHomeHint": "કનેક્ટેડ એકાઉન્ટ્સમાં લાઇવ સ્થિતિ",
+    "codexPaidCreditsLabel": "Paid Codex credits",
+    "codexPaidCreditsAvailable": "Available (balance not reported)",
+    "codexPaidCreditsUnavailable": "Unavailable or spending limit reached",
+    "codexPaidCreditsUnlimited": "Unlimited"
   },
   "modals": {
     "waitingAuth": "અધિકૃતતાની રાહ જોઈ રહ્યું છે",

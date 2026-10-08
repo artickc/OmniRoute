@@ -1914,6 +1914,9 @@
   "analytics": {
     "title": "Phân tích",
     "usageAnalyticsTitle": "Phân tích mức sử dụng",
+    "tokenDisplayCompact": "Rút gọn",
+    "tokenDisplayExact": "Chính xác",
+    "tokenDisplayMode": "Chế độ hiển thị token",
     "diversityScoreTitle": "Đa dạng nhà cung cấp",
     "diversityScoreDesc": "Ảnh chụp nhanh sự tập trung của nhà cung cấp trong khung thời gian lưu lượng truy cập gần đây.",
     "diversityShannonEntropy": "Entropy Shannon",
@@ -5572,6 +5575,8 @@
     "modelsActive": "Đang hoạt động",
     "showModel": "Hiển thị mô hình",
     "hideModel": "Ẩn mô hình",
+    "blacklistModel": "Chặn",
+    "blacklistModelTooltip": "Chặn mô hình này và ẩn nó khỏi danh mục",
     "removeModel": "Xóa mô hình",
     "rateLimitProtected": "Được bảo vệ",
     "rateLimitUnprotected": "Không được bảo vệ",
@@ -6710,7 +6715,14 @@
     "rateLimitOverridesModelConcurrencyLabel": "Per-model concurrency caps",
     "rateLimitOverridesModelConcurrencyPlaceholder": "glm-5=1\nglm-4.7=3",
     "rateLimitOverridesModelConcurrencyHint": "Optional: one model=cap per line, matched against the exact upstream model id. Queues excess requests locally; blank means no per-model cap.",
-    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}."
+    "rateLimitOverridesModelConcurrencyInvalid": "Invalid per-model concurrency entry \"{entry}\" — use model=cap with a whole number from 1 to {max}.",
+    "codexPaidCreditsShort": "Tín dụng bổ sung",
+    "codexPaidCreditsToggleTitle": "Cho phép sử dụng tín dụng trả phí của Codex sau khi hết hạn mức gói đăng ký (có thể phát sinh phí bổ sung)",
+    "codexPaidCreditsEnabled": "Đã bật tín dụng trả phí của Codex (có thể phát sinh phí bổ sung)",
+    "codexPaidCreditsDisabled": "Đã tắt tín dụng trả phí của Codex",
+    "failedUpdateCodexPaidCredits": "Không thể cập nhật chính sách tín dụng trả phí của Codex",
+    "allowCodexPaidCreditsLabel": "Cho phép tín dụng trả phí của Codex",
+    "allowCodexPaidCreditsDescription": "Cho phép tài khoản này sử dụng tín dụng trả phí sau khi hạn mức gói đăng ký đạt đến ngưỡng cắt. Yêu cầu có tín dụng khả dụng do OpenAI báo cáo; có thể phát sinh phí. Giới hạn Spark và thời gian chờ (cooldown) từ upstream vẫn được áp dụng. Tính khả dụng của tín dụng được kiểm tra ngay cả khi tính năng preflight hạn mức bị tắt."
   },
   "settings": {
     "title": "Cài đặt",
@@ -10093,7 +10105,11 @@
     "updatedShort": "Đã cập nhật",
     "lastRefreshed": "Cập nhật lần cuối",
     "providerQuota": "Hạn ngạch nhà cung cấp",
-    "providerQuotaHomeHint": "Trạng thái theo thời gian thực của các tài khoản đã kết nối"
+    "providerQuotaHomeHint": "Trạng thái theo thời gian thực của các tài khoản đã kết nối",
+    "codexPaidCreditsLabel": "Tín dụng trả phí Codex",
+    "codexPaidCreditsAvailable": "Khả dụng (không báo cáo số dư)",
+    "codexPaidCreditsUnavailable": "Không khả dụng hoặc đã đạt giới hạn chi tiêu",
+    "codexPaidCreditsUnlimited": "Không giới hạn"
   },
   "modals": {
     "waitingAuth": "Đang chờ ủy quyền",
