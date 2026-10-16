@@ -129,6 +129,28 @@ function findBestMessageText(output: unknown[]): {
  *
  * @param toolNameMap - Optional Map<prefixedName, originalName> for Claude OAuth tool name stripping
  */
+/** Map sanitized tool names in an OpenAI chat.completion back to the declared names. */
+function restoreOpenAIToolCallNames(
+  payload: unknown,
+  toolNameMap?: Map<string, string> | null
+): void {
+  if (!(toolNameMap instanceof Map) || toolNameMap.size === 0) return;
+  const choices = toRecord(payload).choices;
+  if (!Array.isArray(choices)) return;
+  for (const choice of choices) {
+    const toolCalls = toRecord(toRecord(choice).message).tool_calls;
+    if (!Array.isArray(toolCalls)) continue;
+    for (const toolCall of toolCalls) {
+      const fn = toRecord(toolCall).function;
+      if (!fn || typeof fn !== "object") continue;
+      const fnRecord = fn as Record<string, unknown>;
+      const original =
+        typeof fnRecord.name === "string" ? toolNameMap.get(fnRecord.name) : undefined;
+      if (typeof original === "string" && original) fnRecord.name = original;
+    }
+  }
+}
+
 export function translateNonStreamingResponse(
   responseBody: unknown,
   targetFormat: string,
@@ -564,6 +586,11 @@ export function translateNonStreamingResponse(
       intermediateOpenAI = result;
     }
   }
+
+  // Some executors collect their upstream SSE straight into an OpenAI chat.completion
+  // (e.g. the Antigravity non-stream path), which the per-format branches above leave
+  // untouched — restore the client's tool names on that shape too.
+  restoreOpenAIToolCallNames(intermediateOpenAI, toolNameMap);
 
   // Phase 3: Translate from OpenAI back to Client Source format
   if (sourceFormat === FORMATS.CLAUDE && sourceFormat !== targetFormat) {

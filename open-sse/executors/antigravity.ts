@@ -289,6 +289,9 @@ async function cleanModelName(model: string, modelIdOverride?: string): Promise<
  */
 export const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 16384;
 
+/** Output tokens always left for the visible answer when thinking is capped. */
+const ANTIGRAVITY_MIN_ANSWER_TOKENS = 1024;
+
 function applyAntigravityGenerationDefaults(request: Record<string, unknown>): void {
   const generationConfig =
     request.generationConfig && typeof request.generationConfig === "object"
@@ -324,6 +327,23 @@ function applyAntigravityGenerationDefaults(request: Record<string, unknown>): v
   const finalMax = Number(generationConfig.maxOutputTokens);
   if (Number.isFinite(finalMax) && finalMax > MAX_ANTIGRAVITY_OUTPUT_TOKENS) {
     generationConfig.maxOutputTokens = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
+  }
+
+  // Thinking tokens count against maxOutputTokens. After the cap, a budget at or above
+  // the limit (e.g. the default 24576 vs 16384) lets reasoning consume the whole output
+  // and the reply comes back empty with finish_reason "length". Keep room for the answer.
+  const cappedMax = Number(generationConfig.maxOutputTokens);
+  if (
+    thinkingConfig &&
+    Number.isFinite(thinkingBudget) &&
+    thinkingBudget > 0 &&
+    Number.isFinite(cappedMax) &&
+    thinkingBudget >= cappedMax
+  ) {
+    thinkingConfig.thinkingBudget = Math.max(
+      1,
+      cappedMax - Math.max(ANTIGRAVITY_MIN_ANSWER_TOKENS, Math.floor(cappedMax / 4))
+    );
   }
 
   request.generationConfig = generationConfig;

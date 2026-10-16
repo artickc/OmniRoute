@@ -31,6 +31,8 @@ const ALLOWED_USAGE_FIELDS = new Set([
   "cached_tokens",
   "prompt_tokens_details",
   "completion_tokens_details",
+  // Request cost reported by OpenRouter-style upstreams; clients read it from usage.
+  "cost",
   // Keep through sanitize → applyClientUsageBuffer so heuristic web usage is
   // not inflated by the default USAGE_TOKEN_BUFFER (2000).
   "estimated",
@@ -69,8 +71,15 @@ function deleteOpenAICompatibleReasoningFields(record: JsonRecord): void {
   delete record.reasoning_details;
 }
 
+// Zero-width characters are stripped to undo name obfuscation (e.g. "o\u200Dpencode"),
+// but a ZWJ that joins two emoji is part of the glyph (family, \u2764\uFE0F\u200D\uD83D\uDD25, \uD83D\uDC69\uD83C\uDFFD\u200D\uD83D\uDCBB) and must
+// survive. A ZWJ is kept when it sits between emoji, or at a chunk edge next to one
+// (streamed deltas can split a sequence).
+const STRIPPABLE_ZERO_WIDTH_RE =
+  /[\u200B\u200C\uFEFF]|\u200D(?=[^\p{Extended_Pictographic}])|(?<=[^\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F])\u200D/gu;
+
 function stripZeroWidthText(value: string): string {
-  return value.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return value.replace(STRIPPABLE_ZERO_WIDTH_RE, "");
 }
 
 function stripZeroWidthToolArgumentJson(value: unknown): string {
@@ -152,23 +161,37 @@ function findBalancedJsonEnd(text: string, startIndex: number): number {
 
 function stripInternalToolEnvelopeText(content: string): string {
   let sanitized = stripZeroWidthText(content);
+  // `to=` must start a token: `photo=abc`, `?to=x` and `&to=y` in URLs or prose are
+  // not tool envelopes.
   const markerRegex =
-    /to=(?:functions\.[A-Za-z0-9_.-]+|multi_tool_use\.[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*)/g;
+    /(?<![A-Za-z0-9_.?&=/%-])to=(functions\.[A-Za-z0-9_.-]+|multi_tool_use\.[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*)/g;
 
   while (true) {
     const match = markerRegex.exec(sanitized);
     if (!match || match.index < 0) break;
 
+    // Namespaced recipients (functions.*, multi_tool_use.*) are unmistakably leaked
+    // envelopes; a bare `to=word` only counts when its JSON payload follows right away.
+    const namespaced = match[1].includes(".");
+    const markerEnd = match.index + match[0].length;
     const searchWindowEnd = Math.min(sanitized.length, match.index + 1200);
     const jsonStart = sanitized.indexOf("{", match.index);
-    if (jsonStart < 0 || jsonStart >= searchWindowEnd) {
-      sanitized = `${sanitized.slice(0, match.index)}${sanitized.slice(match.index + match[0].length)}`;
+    const gap = jsonStart >= 0 ? sanitized.slice(markerEnd, jsonStart) : "";
+    const jsonFollows =
+      jsonStart >= 0 &&
+      jsonStart < searchWindowEnd &&
+      (namespaced || (gap.length <= 80 && (gap.match(/\n/g)?.length ?? 0) <= 1));
+    if (!jsonFollows) {
+      if (!namespaced) continue;
+      sanitized = `${sanitized.slice(0, match.index)}${sanitized.slice(markerEnd)}`;
       markerRegex.lastIndex = 0;
       continue;
     }
 
     const jsonEnd = findBalancedJsonEnd(sanitized, jsonStart);
     if (jsonEnd < 0) {
+      // Never truncate the rest of a reply because of a bare-word match.
+      if (!namespaced) continue;
       sanitized = sanitized.slice(0, match.index);
       break;
     }

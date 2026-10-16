@@ -1,6 +1,8 @@
 import { CLAUDE_OAUTH_TOOL_PREFIX } from "../../translator/request/openai-to-claude.ts";
 
-export function buildClaudePassthroughToolNameMap(body: Record<string, unknown> | null | undefined) {
+export function buildClaudePassthroughToolNameMap(
+  body: Record<string, unknown> | null | undefined
+) {
   if (!body || !Array.isArray(body.tools)) return null;
 
   const toolNameMap = new Map<string, string>();
@@ -62,4 +64,34 @@ export function mergeResponseToolNameMap(
     merged.set(toolName, originalName);
   }
   return merged;
+}
+
+export type RequestToolIdentity = { namespace: string; name: string };
+
+/**
+ * Take the Responses-API namespace identity map (#7936) off the translated request.
+ *
+ * Request translators use the same `_toolNameMap` side channel for two kinds of maps:
+ * the Responses translator stores `{ namespace, name }` identities, while the Gemini
+ * and Claude translators store sanitized → original tool names (`weather_lookup_v2`
+ * → `weather.lookup-v2`). Only the identity map is removed here; a name map stays on
+ * the body so the response side can restore the tool names the client declared.
+ */
+export function takeRequestToolIdentityMap(
+  translatedBody: Record<string, unknown> | null | undefined
+): Map<string, RequestToolIdentity> | null {
+  const candidate = translatedBody?._toolNameMap;
+  if (!(candidate instanceof Map) || candidate.size === 0) return null;
+  for (const value of candidate.values()) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      typeof (value as Record<string, unknown>).namespace !== "string" ||
+      typeof (value as Record<string, unknown>).name !== "string"
+    ) {
+      return null;
+    }
+  }
+  delete translatedBody!._toolNameMap;
+  return candidate as Map<string, RequestToolIdentity>;
 }

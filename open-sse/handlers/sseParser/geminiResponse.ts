@@ -2,6 +2,7 @@
 // Extracted verbatim from sseParser.ts (file-size cap): pure parsing, no host
 // state, following the handlers submodule pattern (chatCore/, responseSanitizer/).
 import { normalizeOpenAICompatibleFinishReasonString } from "../../utils/finishReason.ts";
+import { geminiUsageMetadataToOpenAIUsage } from "../../utils/geminiUsage.ts";
 
 type AccumulatedToolCall = {
   id: string;
@@ -53,7 +54,11 @@ function extractGeminiMarkdownShortcut(parsed: Record<string, unknown>): string 
 
 /** Append one candidate content part (text or textual tool call) onto the accumulator. */
 function applyCandidatePart(part: Record<string, unknown>, acc: GeminiSSEAccumulator): void {
-  if (typeof part.text !== "string" || part.thought || part.thoughtSignature) return;
+  // A thoughtSignature alone does not make a part a thought (Gemini signs the first
+  // visible part after thinking); only `thought: true` marks reasoning. Empty
+  // signature-only parts carry no text.
+  if (typeof part.text !== "string" || part.thought) return;
+  if (part.text === "" && part.thoughtSignature) return;
 
   const textualToolCall = tryParseTextualToolCall(part.text);
   if (textualToolCall) {
@@ -99,13 +104,9 @@ function applyFinishReason(
 /** Extract usageMetadata into the OpenAI-shaped usage object, if present. */
 function applyUsageMetadata(parsed: Record<string, unknown>, acc: GeminiSSEAccumulator): void {
   const response = parsed.response as Record<string, unknown> | undefined;
-  const um = response?.usageMetadata as Record<string, unknown> | undefined;
-  if (!um) return;
-  acc.usage = {
-    prompt_tokens: um.promptTokenCount || 0,
-    completion_tokens: um.candidatesTokenCount || 0,
-    total_tokens: um.totalTokenCount || 0,
-  };
+  const usage = geminiUsageMetadataToOpenAIUsage(response?.usageMetadata);
+  if (!usage) return;
+  acc.usage = usage;
 }
 
 /** Parse one `data:` line's JSON payload and fold it into the accumulator (best-effort). */

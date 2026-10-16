@@ -223,6 +223,7 @@ import {
   buildClaudePassthroughToolNameMap,
   restoreClaudePassthroughToolNames,
   mergeResponseToolNameMap,
+  takeRequestToolIdentityMap,
 } from "./chatCore/passthroughToolNames.ts";
 import { resolveCompressionSettings } from "./chatCore/compressionSettings.ts";
 import { isCompressionExcluded } from "../services/compression/exclusions.ts";
@@ -2260,9 +2261,9 @@ export async function handleChatCore({
   // the latter is a Kiro/Claude passthrough alias channel with string values,
   // while namespace identities carry `{namespace, name}` for the #7936 response
   // seam. Extract first because Kiro merge may reuse `_toolNameMap` below.
-  const requestToolIdentityMap =
-    translatedBody._toolNameMap instanceof Map ? translatedBody._toolNameMap : null;
-  delete translatedBody._toolNameMap;
+  // Only a `{namespace, name}` identity map is taken here; a sanitized -> original
+  // name map (Gemini/Claude translators) stays for the toolNameMap extraction below.
+  const requestToolIdentityMap = takeRequestToolIdentityMap(translatedBody);
 
   // Kiro: sanitize tool schemas before dispatch. Kiro returns 400 "Improperly
   // formed request" for unsupported JSON-Schema keywords (anyOf/$ref/if-then,

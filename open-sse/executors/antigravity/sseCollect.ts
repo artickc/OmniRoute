@@ -1,6 +1,7 @@
 // Pure SSE-payload -> collected-stream parsing for the Antigravity executor.
 // Extracted verbatim from antigravity.ts (no host state, no fetch/auth).
 import { normalizeOpenAICompatibleFinishReasonString } from "../../utils/finishReason.ts";
+import { geminiUsageMetadataToOpenAIUsage } from "../../utils/geminiUsage.ts";
 
 export type AntigravityCollectedStream = {
   textContent: string;
@@ -110,7 +111,14 @@ export function processAntigravitySSEPayload(
           collected.finishReason = "tool_calls";
           continue;
         }
-        if (typeof part.text === "string" && !part.thought && !part.thoughtSignature) {
+        // A thoughtSignature alone does not make a part a thought: Gemini signs the first
+        // visible part after thinking (the streaming translator emits it as content). Only
+        // `thought: true` marks reasoning; empty signature-only parts carry no text.
+        if (
+          typeof part.text === "string" &&
+          !part.thought &&
+          !(part.text === "" && part.thoughtSignature)
+        ) {
           const textualToolCall = parseAntigravityTextualToolCall(part.text);
           if (textualToolCall) {
             addAntigravityTextualToolCall(collected, textualToolCall);
@@ -140,12 +148,7 @@ export function processAntigravitySSEPayload(
       );
     }
     if (parsed?.response?.usageMetadata) {
-      const um = parsed.response.usageMetadata;
-      collected.usage = {
-        prompt_tokens: um.promptTokenCount || 0,
-        completion_tokens: um.candidatesTokenCount || 0,
-        total_tokens: um.totalTokenCount || 0,
-      };
+      collected.usage = geminiUsageMetadataToOpenAIUsage(parsed.response.usageMetadata);
     }
     if (Array.isArray(parsed?.remainingCredits)) {
       collected.remainingCredits = parsed.remainingCredits;
