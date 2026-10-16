@@ -32,14 +32,15 @@ export function isSubscriptionQuotaText(lower: string, provider?: string | null)
   return (
     lower.includes("usage limit reached") ||
     lower.includes("usage limit has been") ||
+    // OpenCode Go: "[429]: Go usage limit exceeded" — the account's plan quota, not RPM
+    lower.includes("usage limit exceeded") ||
     lower.includes("claude pro usage limit") ||
     lower.includes("you've reached your usage limit") ||
     lower.includes("you have reached your usage limit") ||
     // Native Claude OAuth uses this otherwise-generic 429 wording for an
     // exhausted subscription window. Keep it provider-scoped: other upstreams
     // can use the same phrase for a short RPM throttle.
-    (provider === "claude" &&
-      lower.includes("this request would exceed your account's rate limit"))
+    (provider === "claude" && lower.includes("this request would exceed your account's rate limit"))
   );
 }
 
@@ -106,6 +107,27 @@ export function buildWeeklyQuotaFallback(errorStr: string): QuotaTextFallback | 
   return {
     shouldFallback: true,
     cooldownMs: WEEKLY_QUOTA_COOLDOWN_MS,
+    reason: RateLimitReason.QUOTA_EXHAUSTED,
+  };
+}
+
+// ─── OpenCode Go plan quota ─────────────────────────────────────────────────
+//
+// OpenCode Go returns 429 "Go usage limit exceeded" once the account's plan
+// quota is spent (Retry-After is days away). opencode-go is an apikey-category
+// provider, so — like the weekly cap above — the oauth-only subscription
+// branch never sees it and it fell through to the ~3s generic 429 backoff:
+// combos then walked every opencode-go model and hit their attempt cap. Ungated
+// and connection-scoped: every model on the account shares the quota.
+export function isPlanUsageLimitText(lower: string): boolean {
+  return lower.includes("usage limit exceeded");
+}
+
+export function buildPlanUsageLimitFallback(errorStr: string): QuotaTextFallback | null {
+  if (!isPlanUsageLimitText(errorStr.toLowerCase())) return null;
+  return {
+    shouldFallback: true,
+    cooldownMs: SUBSCRIPTION_QUOTA_COOLDOWN_MS,
     reason: RateLimitReason.QUOTA_EXHAUSTED,
   };
 }

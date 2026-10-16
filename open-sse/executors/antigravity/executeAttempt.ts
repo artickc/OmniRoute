@@ -30,6 +30,27 @@ import type { AntigravityCredentials } from "../antigravity.ts";
 const LONG_RETRY_THRESHOLD_MS = 60_000;
 const CREDITS_EXHAUSTED_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours
 
+/**
+ * Projects whose requests 403 (USER_PROJECT_DENIED) with `x-goog-user-project` and
+ * succeed without it — e.g. the shared "aicode-consumers" project of Google AI
+ * Pro consumer accounts. Remembered so later requests skip the doomed first try
+ * instead of paying a 403 round trip on every call.
+ */
+const MAX_USER_PROJECT_HEADER_DENIED = 200;
+const userProjectHeaderDenied = new Set<string>();
+
+function rememberUserProjectHeaderDenied(project: string | undefined): void {
+  if (!project || userProjectHeaderDenied.has(project)) return;
+  if (userProjectHeaderDenied.size >= MAX_USER_PROJECT_HEADER_DENIED)
+    userProjectHeaderDenied.clear();
+  userProjectHeaderDenied.add(project);
+}
+
+/** @internal test hook */
+export function resetUserProjectHeaderDenied(): void {
+  userProjectHeaderDenied.clear();
+}
+
 /** Invoked with a fresh GOOGLE_ONE_AI credit balance to persist in the caller's cache. */
 export type OnAntigravityCreditsUpdate = (accountId: string, balance: number) => void;
 
@@ -341,6 +362,10 @@ export async function sendAntigravityRequest(
     credentials,
     transformedBody
   );
+  const userProject = finalHeaders["x-goog-user-project"];
+  if (userProject && userProjectHeaderDenied.has(userProject)) {
+    removeHeaderCaseInsensitive(finalHeaders, "x-goog-user-project");
+  }
 
   log.debug(
     "TELEMETRY",
@@ -376,6 +401,7 @@ export async function sendAntigravityRequest(
       signal,
     });
     finalHeaders = retryHeaders;
+    if (response.ok) rememberUserProjectHeaderDenied(userProject);
   }
 
   if (!response.ok) {

@@ -145,6 +145,8 @@ export function getEffectiveQuotaUsage(
  * Must be called once, early in the startup sequence, before any request
  * is handled.  Returns the number of connections that were cleared.
  */
+const PLAN_QUOTA_ERROR_RE = /usage limit (exceeded|reached)|quota (exceeded|exhausted)/i;
+
 export function clearStaleCrashCooldowns(): { cleared: number } {
   const db = getDbInstance() as unknown as DbLike;
   const now = new Date().toISOString();
@@ -156,13 +158,23 @@ export function clearStaleCrashCooldowns(): { cleared: number } {
 
   const rows = db
     .prepare(
-      `SELECT id, test_status FROM provider_connections WHERE rate_limited_until IS NOT NULL`
+      `SELECT id, test_status, rate_limited_until, last_error FROM provider_connections WHERE rate_limited_until IS NOT NULL`
     )
-    .all() as Array<{ id: string; test_status: string | null }>;
+    .all() as Array<{
+    id: string;
+    test_status: string | null;
+    rate_limited_until: string | null;
+    last_error: string | null;
+  }>;
 
   const toReset = rows.filter((r) => {
     const status = (r.test_status || "").trim().toLowerCase();
-    return !TERMINAL_STATUSES.has(status);
+    if (TERMINAL_STATUSES.has(status)) return false;
+    // An explicit plan quota (e.g. OpenCode Go "usage limit exceeded") is an upstream fact, not
+    // crash back-off: forgetting it on restart sent the next request straight into the same 429.
+    const untilMs = new Date(r.rate_limited_until || "").getTime();
+    const stillLocked = Number.isFinite(untilMs) && untilMs > Date.now();
+    return !(stillLocked && PLAN_QUOTA_ERROR_RE.test(r.last_error || ""));
   });
 
   if (toReset.length === 0) return { cleared: 0 };

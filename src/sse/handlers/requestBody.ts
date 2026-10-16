@@ -15,6 +15,27 @@
  * pre-parse (most routes) pass `null`/`undefined` and the body is parsed from the request
  * as before.
  */
+const JSON_ESCAPE_OR_STRAY_BACKSLASH = /\\(\\|["/bfnrt]|u[0-9a-fA-F]{4})|\\/g;
+
+/**
+ * Parse a JSON request body, repairing invalid string escapes ("\V") once before giving up.
+ * A text-level rewrite upstream (the desktop app's privacy redaction turned "\nuser@mail.com"
+ * into "\VPPRIV_...") left one bad escape in otherwise valid JSON, and every later turn of
+ * that conversation then failed with 400 "Invalid JSON body". Valid escapes are kept; a
+ * stray backslash is dropped. Any other syntax error still throws.
+ */
+export function parseJsonBodyLenient(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const repaired = text.replace(JSON_ESCAPE_OR_STRAY_BACKSLASH, (match, valid) =>
+      valid !== undefined ? match : ""
+    );
+    if (repaired === text) throw err;
+    return JSON.parse(repaired);
+  }
+}
+
 export async function resolveChatRequestBody(
   request: { json: () => Promise<unknown> },
   preParsedBody: unknown = null

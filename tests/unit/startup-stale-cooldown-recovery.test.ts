@@ -270,8 +270,53 @@ test("clearStaleCrashCooldowns handles mixed transient + terminal connections co
 
   const updatedTerminal = await providersDb.getProviderConnectionById(terminal.id);
   assert.equal(updatedTerminal?.testStatus, "banned", "terminal connection untouched");
+  assert.ok(updatedTerminal?.rateLimitedUntil, "terminal rate_limited_until preserved");
+});
+
+test("clearStaleCrashCooldowns keeps a live plan-quota lock (OpenCode Go usage limit)", async () => {
+  const conn = await providersDb.createProviderConnection({
+    provider: "opencode-go",
+    authType: "apikey",
+    name: "Go plan",
+    apiKey: "sk-go",
+  });
+
+  await providersDb.updateProviderConnection(conn.id, {
+    ...conn,
+    rateLimitedUntil: new Date(FAR_FUTURE).toISOString(),
+    testStatus: "unavailable",
+    lastError: "[429]: Go usage limit exceeded",
+    lastErrorType: "rate_limited",
+  });
+
+  providersDb.clearStaleCrashCooldowns();
+
+  const updated = await providersDb.getProviderConnectionById(conn.id);
   assert.ok(
-    updatedTerminal?.rateLimitedUntil,
-    "terminal rate_limited_until preserved"
+    updated?.rateLimitedUntil &&
+      new Date(updated.rateLimitedUntil as string).getTime() > Date.now(),
+    "the upstream plan quota must survive a restart"
   );
+  assert.equal(updated?.testStatus, "unavailable");
+});
+
+test("clearStaleCrashCooldowns still clears an expired plan-quota lock", async () => {
+  const conn = await providersDb.createProviderConnection({
+    provider: "opencode-go",
+    authType: "apikey",
+    name: "Go plan expired",
+    apiKey: "sk-go-2",
+  });
+
+  await providersDb.updateProviderConnection(conn.id, {
+    ...conn,
+    rateLimitedUntil: new Date(JUST_PAST).toISOString(),
+    testStatus: "unavailable",
+    lastError: "[429]: Go usage limit exceeded",
+  });
+
+  providersDb.clearStaleCrashCooldowns();
+
+  const updated = await providersDb.getProviderConnectionById(conn.id);
+  assert.ok(!updated?.rateLimitedUntil, "an expired quota lock is cleared like any other");
 });

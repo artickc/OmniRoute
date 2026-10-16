@@ -2,6 +2,7 @@ import { z } from "zod";
 import { CORS_HEADERS, handleCorsOptions } from "@/shared/utils/cors";
 import { callCloudWithMachineId } from "@/shared/utils/cloud";
 import { handleChat } from "@/sse/handlers/chat";
+import { parseJsonBodyLenient } from "@/sse/handlers/requestBody";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { initTranslators } from "@omniroute/open-sse/translator/index.ts";
@@ -125,7 +126,10 @@ export async function POST(request) {
     // admitChatRequest(), so json() parses them directly — no clone(), no second stream read.
     let parsedBody = null;
     try {
-      parsedBody = await request.json().catch(() => null);
+      parsedBody = await request
+        .text()
+        .then(parseJsonBodyLenient)
+        .catch(() => null);
       if (parsedBody) {
         // Route-level shape gate (T06) — validates the object already parsed above; it
         // never reads the request body a second time. See chatCompletionsRouteShapeSchema
@@ -135,7 +139,9 @@ export async function POST(request) {
           if (!shapeCheck.success) {
             const issue = shapeCheck.error.issues[0];
             const field = issue?.path?.length ? issue.path.join(".") : "body";
-            return finishAdmission(errorResponse(400, `${field}: ${issue?.message ?? "Invalid request"}`));
+            return finishAdmission(
+              errorResponse(400, `${field}: ${issue?.message ?? "Invalid request"}`)
+            );
           }
         }
 
