@@ -8,6 +8,7 @@ import {
   shouldExposeClaudeEffortVariants,
   claudeEffortLevelsFor,
   appendClaudeEffortVariants,
+  isClaudeEffortRoutableProvider,
 } from "../../open-sse/utils/claudeEffortVariants.ts";
 
 const mk = (id: string, extra: Record<string, unknown> = {}) => ({
