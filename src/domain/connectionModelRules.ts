@@ -70,6 +70,51 @@ export function isModelExcludedByConnection(
   );
 }
 
+function toBareModelId(modelId: string): string {
+  const trimmed = modelId.trim();
+  const slash = trimmed.lastIndexOf("/");
+  return (slash >= 0 ? trimmed.slice(slash + 1) : trimmed).toLowerCase();
+}
+
+/**
+ * Build a check telling whether a connection can serve `modelId`, using the model
+ * catalogs discovered per connection from the upstream (e.g. Antigravity
+ * `:fetchAvailableModels`). Accounts on different plans expose different models, so
+ * a request must not land on an account whose live catalog lacks the model — that
+ * only produces an upstream 404.
+ *
+ * Fail-open by design: a connection without a discovered catalog is always allowed,
+ * and when no catalog lists the model at all (new model, stale sync) every connection
+ * is allowed, so a missing sync can never block routing.
+ */
+export function createDiscoveredModelServingCheck(
+  modelId: unknown,
+  discoveredByConnection: Record<string, readonly string[] | null | undefined>
+): (connectionId: string) => boolean {
+  if (typeof modelId !== "string" || !modelId.trim()) return () => true;
+  const requested = new Set(getModelMatchCandidates(modelId).map(toBareModelId));
+
+  const catalogs = new Map<string, Set<string>>();
+  let servedAnywhere = false;
+  for (const [connectionId, ids] of Object.entries(discoveredByConnection || {})) {
+    if (!Array.isArray(ids) || ids.length === 0) continue;
+    const catalog = new Set(
+      ids.filter((id): id is string => typeof id === "string").map(toBareModelId)
+    );
+    catalogs.set(connectionId, catalog);
+    if (!servedAnywhere && [...requested].some((candidate) => catalog.has(candidate))) {
+      servedAnywhere = true;
+    }
+  }
+  if (!servedAnywhere) return () => true;
+
+  return (connectionId: string) => {
+    const catalog = catalogs.get(connectionId);
+    if (!catalog) return true;
+    return [...requested].some((candidate) => catalog.has(candidate));
+  };
+}
+
 export function hasEligibleConnectionForModel(
   connections: ConnectionLike[] | null | undefined,
   modelId: unknown

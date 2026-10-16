@@ -415,14 +415,23 @@ const modelFailureState = new Map<string, ModelFailureState>();
 
 // Aliases (e.g. "cx" → "codex") must share lockout state with their canonical
 // provider, otherwise a model locked via one spelling stays routable via the other.
+// `agy` (Antigravity CLI) is its own registry id but serves the same connections
+// as `antigravity`, so both spellings share one lock namespace.
 const canonicalProviderCache = new Map<string, string>();
 function getCanonicalLockProvider(provider: string): string {
   let canonical = canonicalProviderCache.get(provider);
   if (!canonical) {
     canonical = resolveProviderId(provider);
+    if (canonical === "agy") canonical = "antigravity";
     canonicalProviderCache.set(provider, canonical);
   }
   return canonical;
+}
+
+// A 404 means this model is not served to this connection; it says nothing about
+// the rest of the quota family, so it must lock the exact model only.
+function isModelNotFoundLock(reason?: string | null, status?: number | null): boolean {
+  return reason === "not_found" || reason === "model_not_found" || status === 404;
 }
 
 function getModelLockKey(
@@ -433,12 +442,11 @@ function getModelLockKey(
   status?: number | null
 ) {
   const canonicalProvider = getCanonicalLockProvider(provider);
-  const lockModel =
-    reason === "not_found" || status === 404
-      ? model
-      : canonicalProvider === "codex"
-        ? getCodexModelScope(model)
-        : getQuotaScopedModelForProvider(canonicalProvider, model) || model;
+  const lockModel = isModelNotFoundLock(reason, status)
+    ? model
+    : canonicalProvider === "codex"
+      ? getCodexModelScope(model)
+      : getQuotaScopedModelForProvider(canonicalProvider, model) || model;
   return `${canonicalProvider}:${connectionId}:${lockModel}`;
 }
 
@@ -1625,7 +1633,11 @@ export function checkFallbackError(
       !errorStr.toLowerCase().includes("hour quota") &&
       !errorStr.toLowerCase().includes("quota has been exceeded")
     ) {
-      return resolveApiKeyForbiddenFallback(errorStr, buildRetryableFallback, RateLimitReason.AUTH_ERROR);
+      return resolveApiKeyForbiddenFallback(
+        errorStr,
+        buildRetryableFallback,
+        RateLimitReason.AUTH_ERROR
+      );
     }
   }
 

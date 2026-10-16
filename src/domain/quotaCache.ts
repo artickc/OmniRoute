@@ -236,6 +236,17 @@ export function __clearForTests() {
   getState().cache.clear();
 }
 
+function getAntigravityMatchingWindows(quotaNames: string[], requestedModel: string): string[] {
+  const requestedFamily = getAntigravityQuotaFamily(requestedModel);
+  const cleanRequestedModel = requestedModel.replace(/^(antigravity|agy)\//, "");
+  return quotaNames.filter((windowName) => {
+    if (requestedFamily === "other") {
+      return windowName.replace(/^(antigravity|agy)\//, "") === cleanRequestedModel;
+    }
+    return getAntigravityQuotaFamily(windowName) === requestedFamily;
+  });
+}
+
 function isAntigravityQuotaExhausted(
   connectionId: string,
   entry: QuotaCacheEntry,
@@ -244,14 +255,7 @@ function isAntigravityQuotaExhausted(
   if (!requestedModel) return entry.exhausted;
   const quotaNames = Object.keys(entry.quotas || {});
   if (quotaNames.length === 0) return entry.exhausted;
-  const requestedFamily = getAntigravityQuotaFamily(requestedModel);
-  const cleanRequestedModel = requestedModel.replace(/^(antigravity|agy)\//, "");
-  const matchingWindows = quotaNames.filter((windowName) => {
-    if (requestedFamily === "other") {
-      return windowName.replace(/^(antigravity|agy)\//, "") === cleanRequestedModel;
-    }
-    return getAntigravityQuotaFamily(windowName) === requestedFamily;
-  });
+  const matchingWindows = getAntigravityMatchingWindows(quotaNames, requestedModel);
   return (
     matchingWindows.length > 0 &&
     matchingWindows.every(
@@ -310,6 +314,32 @@ export function isQuotaExhaustedForRequest(
 
   // Standard (non-per-model-quota) providers: check connection-wide aggregate
   return isStandardQuotaExhausted(entry, now);
+}
+
+/**
+ * When the quota scope a request would consume (the Antigravity family / model
+ * window, or the whole connection for other providers) resets. Used to tell the
+ * client the real reset time instead of a generic short retry hint.
+ */
+export function getQuotaResetAtForRequest(
+  connectionId: string,
+  provider: string,
+  requestedModel: string | null = null
+): string | null {
+  const entry = getState().cache.get(connectionId) || hydrateQuotaCacheFromSnapshots(connectionId);
+  if (!entry) return null;
+  if (!(provider === "antigravity" || provider === "agy") || !requestedModel) {
+    return entry.nextResetAt;
+  }
+  const scoped: Record<string, QuotaInfo> = {};
+  for (const windowName of getAntigravityMatchingWindows(
+    Object.keys(entry.quotas || {}),
+    requestedModel
+  )) {
+    const quota = entry.quotas[windowName];
+    if (quota && quota.remainingPercentage <= 0) scoped[windowName] = quota;
+  }
+  return earliestResetAt(scoped) ?? entry.nextResetAt;
 }
 
 /**

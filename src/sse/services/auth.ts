@@ -20,6 +20,7 @@ import {
 import {
   DEFAULT_QUOTA_THRESHOLD_PERCENT,
   getQuotaCache,
+  getQuotaResetAtForRequest,
   getQuotaWindowStatus,
   isQuotaExhaustedForRequest,
 } from "@/domain/quotaCache";
@@ -66,7 +67,11 @@ import {
   NOAUTH_PROVIDERS,
   WEB_COOKIE_PROVIDERS,
 } from "@/shared/constants/providers";
-import { isModelExcludedByConnection } from "@/domain/connectionModelRules";
+import {
+  createDiscoveredModelServingCheck,
+  isModelExcludedByConnection,
+} from "@/domain/connectionModelRules";
+import { getSyncedAvailableModelsByConnection } from "@/lib/db/models";
 import {
   applySessionAffinityPin,
   formatSessionKeyForLog,
@@ -805,6 +810,34 @@ function providerCanUseSyntheticNoAuthFallback(providerId: string): boolean {
   );
 }
 
+// Antigravity accounts expose plan-dependent catalogs (Ultra: Gemini 4 Argon /
+// Claude 5.5; Pro: Claude 4.6). `agy` shares the same connections.
+const DISCOVERED_CATALOG_ROUTED_PROVIDERS = new Set(["antigravity", "agy"]);
+
+async function loadDiscoveredModelServingCheck(
+  providerId: string,
+  requestedModel: string | null
+): Promise<(connectionId: string) => boolean> {
+  if (!requestedModel || !DISCOVERED_CATALOG_ROUTED_PROVIDERS.has(providerId)) return () => true;
+  try {
+    const byConnection: Record<string, string[]> = {};
+    for (const catalogProvider of DISCOVERED_CATALOG_ROUTED_PROVIDERS) {
+      const synced = await getSyncedAvailableModelsByConnection(catalogProvider);
+      for (const [connectionId, models] of Object.entries(synced)) {
+        const ids = models.map((model) => model.id).filter(Boolean);
+        byConnection[connectionId] = [...(byConnection[connectionId] || []), ...ids];
+      }
+    }
+    return createDiscoveredModelServingCheck(requestedModel, byConnection);
+  } catch (error) {
+    log.debug(
+      "AUTH",
+      `${providerId} | discovered catalog unavailable, not filtering by model: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return () => true;
+  }
+}
+
 async function maybeSyntheticNoAuthFallback(
   providerId: string,
   excludedConnectionIds: Set<string>
@@ -1208,7 +1241,12 @@ export async function getProviderCredentials(
 
     let modelLockedCount = 0;
     let familyLockedCount = 0;
+    let modelUnsupportedCount = 0;
     const connectionFilterStatus = new Map<string, string>();
+    const canServeDiscoveredModel = await loadDiscoveredModelServingCheck(
+      resolvedId,
+      requestedModel
+    );
     // Filter out unavailable accounts and excluded connection
     const availableConnections = connections.filter((c) => {
       if (excludedConnectionIds.has(c.id)) {
@@ -1217,6 +1255,11 @@ export async function getProviderCredentials(
       }
       if (requestedModel && isModelExcludedByConnection(requestedModel, c.providerSpecificData)) {
         connectionFilterStatus.set(c.id, "modelExcluded");
+        return false;
+      }
+      if (!canServeDiscoveredModel(c.id)) {
+        connectionFilterStatus.set(c.id, "modelUnsupported");
+        modelUnsupportedCount += 1;
         return false;
       }
       if (!allowSuppressedConnections) {
@@ -1257,7 +1300,7 @@ export async function getProviderCredentials(
     if (provider === "antigravity") {
       log.info(
         "AUTH",
-        `${provider} selection candidates model=${requestedModel || "none"}: active=${activeConnectionsCount}, excluded=${excludedConnectionIds.size}, modelLocked=${modelLockedCount}, familyLocked=${familyLockedCount}, eligible=${availableConnections.length}`
+        `${provider} selection candidates model=${requestedModel || "none"}: active=${activeConnectionsCount}, excluded=${excludedConnectionIds.size}, modelUnsupported=${modelUnsupportedCount}, modelLocked=${modelLockedCount}, familyLocked=${familyLockedCount}, eligible=${availableConnections.length}`
       );
     }
     connections.forEach((c) => {
@@ -1277,6 +1320,11 @@ export async function getProviderCredentials(
         log.debug(
           "AUTH",
           `  → ${c.id?.slice(0, 8)} | excluded by per-account model rule for ${requestedModel}`
+        );
+      } else if (status === "modelUnsupported") {
+        log.debug(
+          "AUTH",
+          `  → ${c.id?.slice(0, 8)} | ${requestedModel} not in this account's discovered catalog`
         );
       } else if (terminalStatus) {
         log.debug(
@@ -1465,10 +1513,7 @@ export async function getProviderCredentials(
     if (withQuota.length === 0 && exhaustedQuota.length > 0) {
       // All remaining eligible accounts are exhausted
       const earliestResetAt = getEarliestFutureDate(
-        exhaustedQuota.map((c) => {
-          const entry = getQuotaCache(c.id);
-          return entry?.nextResetAt || null;
-        })
+        exhaustedQuota.map((c) => getQuotaResetAtForRequest(c.id, provider, requestedModel))
       );
       const earliestResetMs = parseFutureDateMs(earliestResetAt);
       const retryAfter = earliestResetMs

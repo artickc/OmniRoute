@@ -5,6 +5,7 @@ import {
   getAntigravityFetchAvailableModelsUrls,
 } from "@omniroute/open-sse/config/antigravityUpstream.ts";
 import { getAntigravityContentHeaders } from "@omniroute/open-sse/services/antigravityHeaders.ts";
+import { summarizeUpstreamBodyForLog } from "@omniroute/open-sse/utils/error.ts";
 import { resolveAntigravityClientVersion } from "@omniroute/open-sse/services/antigravityClientProfile.ts";
 import {
   getClientVisibleAntigravityModelName,
@@ -152,9 +153,9 @@ export async function fetchAntigravityDiscoveryModelsCached(
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
+          const errorText = await response.text().catch(() => "");
           console.warn(
-            `[models] ${provider} discovery failed at ${discoveryUrl} (${response.status}): ${errorText}`
+            `[models] ${provider} discovery failed at ${discoveryUrl} (${response.status}): ${summarizeUpstreamBodyForLog(errorText)}`
           );
           continue;
         }
@@ -177,49 +178,9 @@ export async function fetchAntigravityDiscoveryModelsCached(
       }
     }
 
-    // Also query :retrieveUserQuota so models entitled via quota buckets (e.g. gemini-3.6-flash-*,
-    // gemini-pro-agent, gemini-3.1-pro-low) are included in the account's discovered model list.
-    for (const quotaUrl of [
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-    ]) {
-      try {
-        const response = await safeOutboundFetch(quotaUrl, {
-          ...SAFE_OUTBOUND_FETCH_PRESETS.modelsDiscovery,
-          guard: getProviderOutboundGuard(),
-          proxyConfig: proxy,
-          method: "POST",
-          headers: getAntigravityContentHeaders(profile, accessToken),
-          body: requestBody,
-        });
-        if (!response.ok) continue;
-        const quotaData = asRecord(await response.json());
-        const buckets = Array.isArray(quotaData.buckets) ? quotaData.buckets : [];
-        const quotaModels: AntigravityDiscoveryModel[] = [];
-        for (const rawBucket of buckets) {
-          const bucket = asRecord(rawBucket);
-          const modelId = toNonEmptyString(bucket.modelId);
-          if (modelId) {
-            quotaModels.push({ id: modelId, name: modelId });
-          }
-        }
-        const filteredQuotaModels = filterUserCallableAntigravityModels(
-          quotaModels,
-          provider
-        ).map((model) => mapAntigravityModelForClient(model, provider));
-        for (const model of filteredQuotaModels) {
-          if (!byId.has(model.id)) {
-            byId.set(model.id, model);
-          }
-        }
-        if (filteredQuotaModels.length > 0) {
-          break;
-        }
-      } catch {
-        // Ignore quota supplement errors
-      }
-    }
-
+    // :fetchAvailableModels is the only callable catalog. :retrieveUserQuota also lists
+    // buckets for models the account cannot call (gemini-3.6/3.7-flash-*, gemini-3.1-pro-*
+    // return 404 upstream), so quota buckets must never be merged into this list.
     return [...byId.values()];
   })().finally(() => {
     antigravityDiscoveryInflight.delete(cacheKey);

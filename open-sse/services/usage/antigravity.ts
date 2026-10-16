@@ -633,6 +633,7 @@ export async function getAntigravityUsage(
       }
     }
     const quotas: Record<string, UsageQuota> = {};
+    const unknownQuotaModels: string[] = [];
 
     // Parse per-model quota info from fetchAvailableModels response.
     for (const [rawModelKey, infoValue] of Object.entries(modelEntries)) {
@@ -659,12 +660,10 @@ export async function getAntigravityUsage(
       // Distinguish "upstream did not report remainingFraction" from "remaining is 0%".
       // fetchAvailableModels is a catalog view and can be stale/full; retrieveUserQuota is
       // the source of truth for actual Gemini consumption when it includes the model.
-      const fractionReported = rawFraction >= 0;
-      if (!fractionReported) {
-        console.warn(
-          `[Antigravity] model ${modelKey} returned no remainingFraction — quota unknown`
-        );
-      }
+      // Google's proto3 JSON omits zero-valued fields, so a bucket that still carries a
+      // resetTime but no remainingFraction is a spent (0%) bucket, not an unknown one.
+      const fractionReported = rawFraction >= 0 || Boolean(resetAt);
+      if (!fractionReported) unknownQuotaModels.push(modelKey);
       const remainingFraction = fractionReported ? Math.max(0, Math.min(1, rawFraction)) : 0;
       // Models with no resetTime AND a reported full fraction are unlimited
       // (e.g. tab-completion models). Unreported fraction is NEVER unlimited.
@@ -688,6 +687,13 @@ export async function getAntigravityUsage(
         provider,
         connectionId,
         modelKey
+      );
+    }
+
+    if (unknownQuotaModels.length > 0) {
+      // One line per refresh: per-model warnings flooded stderr (and the desktop log view).
+      console.warn(
+        `[Antigravity] no remainingFraction or resetTime for ${unknownQuotaModels.length} model(s) — quota unknown: ${unknownQuotaModels.join(", ")}`
       );
     }
 

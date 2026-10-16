@@ -359,9 +359,19 @@ export function getClientVisibleAntigravityModelName(
   return CLIENT_VISIBLE_MODEL_NAMES[modelId] || fallbackName || modelId;
 }
 
+/**
+ * Ids the live `:fetchAvailableModels` catalog returns that are not chat models:
+ * plan placeholders such as `gemini-4-argon-disabled` (shown greyed out in the
+ * picker for plans without access) and image-generation-only models.
+ */
+export function isNonChatAntigravityCatalogId(modelId: string): boolean {
+  return modelId.endsWith("-disabled") || /-image(-|$)/.test(modelId);
+}
+
 export function isUserCallableAntigravityModelId(modelId: string): boolean {
   if (!modelId) return false;
   return (
+    !isNonChatAntigravityCatalogId(modelId) &&
     !modelId.startsWith("chat_") &&
     !modelId.startsWith("tab_") &&
     !modelId.endsWith("_weekly") &&

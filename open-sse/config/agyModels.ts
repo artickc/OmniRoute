@@ -1,3 +1,5 @@
+import { isNonChatAntigravityCatalogId } from "./antigravityModelAliases.ts";
+
 // Antigravity CLI (`agy`) model catalog.
 //
 // These models are pinned from the live `:fetchAvailableModels` endpoint
@@ -302,6 +304,7 @@ export function getClientVisibleAgyModelName(modelId: string, fallbackName?: str
 export function isUserCallableAgyModelId(modelId: string): boolean {
   return (
     !!modelId &&
+    !isNonChatAntigravityCatalogId(modelId) &&
     !modelId.startsWith("chat_") &&
     !modelId.startsWith("tab_") &&
     !modelId.endsWith("_weekly") &&

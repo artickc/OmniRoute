@@ -73,6 +73,40 @@ export function sanitizeErrorMessage(message: unknown): string {
   return redactSensitiveErrorText(parts.join(""));
 }
 
+const UPSTREAM_LOG_BODY_MAX = 200;
+
+/**
+ * Compact an upstream error body into a single short line for console logs.
+ *
+ * Raw bodies must never be logged verbatim: an HTML error page (e.g. Google's
+ * "Error 404 (Not Found)!!1") spans dozens of lines, and every stderr line becomes
+ * a separate entry in the desktop app's log view. HTML pages collapse to their
+ * <title>; anything else collapses whitespace, is truncated and redacted.
+ */
+export function summarizeUpstreamBodyForLog(
+  body: unknown,
+  maxLength = UPSTREAM_LOG_BODY_MAX
+): string {
+  const text = typeof body === "string" ? body.slice(0, MAX_ERROR_LEN) : "";
+  if (!text.trim()) return "(empty body)";
+  const lower = text.toLowerCase();
+  if (lower.includes("<html") || lower.includes("<!doctype html")) {
+    const titleStart = lower.indexOf("<title>");
+    const titleEnd = titleStart >= 0 ? lower.indexOf("</title>", titleStart) : -1;
+    const title =
+      titleStart >= 0 && titleEnd > titleStart
+        ? text
+            .slice(titleStart + "<title>".length, titleEnd)
+            .replace(/\s+/g, " ")
+            .trim()
+        : "";
+    return title ? `HTML page: ${title.slice(0, maxLength)}` : "HTML page";
+  }
+  const compact = text.replace(/\s+/g, " ").trim();
+  const clipped = compact.length > maxLength ? `${compact.slice(0, maxLength)}…` : compact;
+  return redactSensitiveErrorText(clipped);
+}
+
 const BLOCKED_KEYS =
   /stack|trace|path|file|cwd|dir|password|secret|token|key|authorization|cookie/i;
 const MAX_DEPTH = 4;
