@@ -26,6 +26,7 @@ import { handleEdgeTtsSpeech } from "../executors/edgeTts.ts";
 import { GttsUpstreamError, normalizeGttsLang, synthesizeGtts } from "../executors/gtts.ts";
 import { errorResponse } from "../utils/error.ts";
 import { audioStreamResponse, upstreamErrorResponse } from "../utils/audioResponse.ts";
+import { handleSyntxSpeech } from "./syntxAudio.ts";
 import {
   getKieCallbackUrl,
   getKieErrorMessage,
@@ -904,6 +905,14 @@ export async function handleAudioSpeech({
 
     if (providerConfig.format === "tortoise") {
       return handleTortoiseSpeech(providerConfig, body);
+    }
+
+    if (providerConfig.format === "syntx-audio") {
+      return handleSyntxSpeech({
+        model: modelId,
+        body,
+        credentials,
+      });
     }
 
     // Default: OpenAI-compatible JSON → audio stream proxy (also used by Qwen3)

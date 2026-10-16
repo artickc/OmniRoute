@@ -348,10 +348,15 @@ export async function registerNodejs(): Promise<void> {
     const { startQuotaAutoPing } = await import("@/lib/services/quotaAutoPing");
     startQuotaAutoPing();
     console.log("[STARTUP] Quota auto-ping scheduler started (opt-in, no-op until enabled)");
-    const cloudSyncInitialized = await ensureCloudSyncInitialized();
-    console.log(
-      `[STARTUP] Cloud/model sync background bootstrap ${cloudSyncInitialized ? "initialized" : "skipped"}`
-    );
+    setTimeout(() => {
+      ensureCloudSyncInitialized()
+        .then((cloudSyncInitialized) => {
+          console.log(
+            `[STARTUP] Cloud/model sync background bootstrap ${cloudSyncInitialized ? "initialized" : "skipped"}`
+          );
+        })
+        .catch(() => {});
+    }, 1000);
     const { initBatchProcessor } = await import("@omniroute/open-sse/services/batchProcessor");
     initBatchProcessor();
     console.log("[STARTUP] Batch processor started");
@@ -489,124 +494,103 @@ export async function registerNodejs(): Promise<void> {
     console.warn("[STARTUP] Could not initialize vacuum scheduler (non-fatal):", msg);
   }
 
-  // Warm the model catalog's durable, apiKey-independent sub-caches at
-  // startup — see warmModelCatalogCache() for why the top-level Response
-  // cache alone doesn't deliver this. Fire-and-forget, non-fatal.
-  void warmModelCatalogCache();
-
-  if (!isBackgroundServicesDisabled()) {
-    // All services are independent — run in parallel for faster cold start.
-    await Promise.allSettled([
-      import("@/lib/services/bootstrap")
-        .then(async (m) => {
-          await m.bootstrapEmbeddedServices();
-          console.log("[STARTUP] Embedded services bootstrap complete");
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Embedded services bootstrap failed (non-fatal):", msg);
-        }),
-
-      import("@/lib/services/embedWsProxy")
-        .then((m) => m.initEmbedWsProxy())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Embed WS proxy failed to start (non-fatal):", msg);
-        }),
-
-      import("@omniroute/open-sse/services/autoRefreshDaemon")
-        .then((m) => m.autoRefreshDaemon.start())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Auto-refresh daemon failed to start (non-fatal):", msg);
-        }),
-
-      // Proactive connection-cooldown recovery (#8): re-validate connections whose
-      // transient `rate_limited_until` window has elapsed OUTSIDE the request hot path,
-      // so the first request after a cooldown does not pay the probe latency.
-      import("@/lib/quota/connectionRecovery")
-        .then((m) => m.initConnectionRecoveryScheduler())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Connection recovery scheduler failed to start (non-fatal):", msg);
-        }),
-
-      // Arena ELO sync: model intelligence from the Arena AI leaderboard, powering the
-      // Free Provider Rankings page. On by default; non-blocking, never fatal.
-      import("@/lib/arenaEloSync")
-        .then(async (m) => {
-          const started = await m.initArenaEloSync();
-          if (started) console.log("[STARTUP] Arena ELO sync initialized");
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Arena ELO sync failed to start (non-fatal):", msg);
-        }),
-
-      // Pricing sync: opt-in external pricing data (self-gated by PRICING_SYNC_ENABLED inside
-      // initPricingSync). Non-blocking, never fatal.
-      import("@/lib/pricingSync")
-        .then((m) => m.initPricingSync())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] Pricing sync failed to start (non-fatal):", msg);
-        }),
-
-      // models.dev capability sync: opt-in via Settings > AI (self-gated by
-      // settings.modelsDevSyncEnabled inside initModelsDevSync). Non-blocking, never fatal.
-      import("@/lib/modelsDevSync")
-        .then((m) => m.initModelsDevSync())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] models.dev sync failed to start (non-fatal):", msg);
-        }),
-
-      // Context-window self-correction (5004): periodically reconcile provider-declared
-      // windows (from /models discovery) into auto:discovery overrides. Never fatal.
-      import("@/lib/contextWindowResolver")
-        .then((m) => m.startContextWindowReconcile())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] context-window reconcile failed to start (non-fatal):", msg);
-        }),
-
-      // TV6 typed memory decay: optional periodic sweep of decayed episodic memories.
-      // Doubly opt-in (no-op unless MEMORY_TYPED_DECAY_ENABLED=true AND
-      // MEMORY_TYPED_DECAY_SWEEP_INTERVAL>0). Never deletes by default. Never fatal.
-      import("@/lib/memory/typedDecay")
-        .then((m) => m.startMemoryDecaySweep())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] memory decay sweep failed to start (non-fatal):", msg);
-        }),
-
-      // Backup schedule (#8513): execute `backup-schedule.json` cron server-side.
-      // Reads the schedule written by `omniroute backup auto enable` and fires
-      // `runBackupCommand` when the cron expression matches. Self-gated: no-op
-      // when no schedule file exists or the schedule is disabled. Never fatal.
-      import("@/lib/jobs/backupScheduleJob")
-        .then((m) => m.startBackupScheduleJob())
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn("[STARTUP] backup schedule job failed to start (non-fatal):", msg);
-        }),
-
-      // Real-time dashboard WebSocket daemon (port 20132): powers Combo Studio Live,
-      // the Home live-pulse, and Live Compression. Side-effect import triggers the
-      // flag-gated auto-start (OMNIROUTE_ENABLE_LIVE_WS, default ON).
-      import("@/server/ws/liveServer")
-        .then(() => {
-          console.log("[STARTUP] Live dashboard WebSocket daemon bootstrap invoked");
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(
-            "[STARTUP] Live dashboard WebSocket daemon failed to start (non-fatal):",
-            msg
-          );
-        }),
-    ]);
-  }
-
   markServerReady();
+
+  // Warm the model catalog and start non-critical background services after
+  // the HTTP server is already listening so startup latency stays low on slower CPUs.
+  setTimeout(() => {
+    void warmModelCatalogCache();
+
+    if (!isBackgroundServicesDisabled()) {
+      void Promise.allSettled([
+        import("@/lib/services/bootstrap")
+          .then(async (m) => {
+            await m.bootstrapEmbeddedServices();
+            console.log("[STARTUP] Embedded services bootstrap complete");
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Embedded services bootstrap failed (non-fatal):", msg);
+          }),
+
+        import("@/lib/services/embedWsProxy")
+          .then((m) => m.initEmbedWsProxy())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Embed WS proxy failed to start (non-fatal):", msg);
+          }),
+
+        import("@omniroute/open-sse/services/autoRefreshDaemon")
+          .then((m) => m.autoRefreshDaemon.start())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Auto-refresh daemon failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/quota/connectionRecovery")
+          .then((m) => m.initConnectionRecoveryScheduler())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Connection recovery scheduler failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/arenaEloSync")
+          .then(async (m) => {
+            const started = await m.initArenaEloSync();
+            if (started) console.log("[STARTUP] Arena ELO sync initialized");
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Arena ELO sync failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/pricingSync")
+          .then((m) => m.initPricingSync())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] Pricing sync failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/modelsDevSync")
+          .then((m) => m.initModelsDevSync())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] models.dev sync failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/contextWindowResolver")
+          .then((m) => m.startContextWindowReconcile())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] context-window reconcile failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/memory/typedDecay")
+          .then((m) => m.startMemoryDecaySweep())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] memory decay sweep failed to start (non-fatal):", msg);
+          }),
+
+        import("@/lib/jobs/backupScheduleJob")
+          .then((m) => m.startBackupScheduleJob())
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[STARTUP] backup schedule job failed to start (non-fatal):", msg);
+          }),
+
+        import("@/server/ws/liveServer")
+          .then(() => {
+            console.log("[STARTUP] Live dashboard WebSocket daemon bootstrap invoked");
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(
+              "[STARTUP] Live dashboard WebSocket daemon failed to start (non-fatal):",
+              msg
+            );
+          }),
+      ]);
+    }
+  }, 1500);
 }

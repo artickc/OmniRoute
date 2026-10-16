@@ -9,12 +9,14 @@ import { parseModelFromRegistry } from "./registryUtils.ts";
 import { RUNWAYML_SUPPORTED_VIDEO_MODELS } from "./runway.ts";
 import { SEGMIND_VIDEO_MODELS } from "./providers/registry/segmind/videoModels.ts";
 import { toRegistryVideoModels } from "../services/adobeFireflyModels.ts";
+import { toRegistryVideoModels as toSyntxVideoModels } from "../services/syntxMediaCatalog.ts";
 
 interface VideoModel {
   id: string;
   name: string;
   isMarket?: boolean;
   supportedSizes?: string[];
+  inputModalities?: string[];
   mediaCapabilities?: Record<string, unknown>;
 }
 
@@ -339,6 +341,16 @@ export const VIDEO_PROVIDERS: Record<string, VideoProvider> = {
     format: "adobe-firefly-video",
     models: toRegistryVideoModels(),
   },
+
+  syntx: {
+    id: "syntx",
+    alias: "stx",
+    baseUrl: "https://api.syntx.ai/api/v1/video/generate",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "syntx-video",
+    models: toSyntxVideoModels(),
+  },
 };
 
 /**
@@ -368,6 +380,7 @@ export function getAllVideoModels() {
           name: model.name,
           provider: providerId,
           supportedSizes: model.supportedSizes || [],
+          inputModalities: model.inputModalities || ["text"],
           mediaCapabilities: model.mediaCapabilities,
         }))
       )

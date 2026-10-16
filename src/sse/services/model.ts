@@ -203,21 +203,88 @@ function buildRuntimeModelMeta(customMatch: any, syncedMatch: any): RuntimeModel
   return metadata;
 }
 
+function collectKnownModelIds(...lists: unknown[]): string[] {
+  const ids: string[] = [];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (typeof item === "string" && item.trim()) {
+        ids.push(item.trim());
+        continue;
+      }
+      if (item && typeof item === "object") {
+        const id = (item as { id?: unknown }).id;
+        if (typeof id === "string" && id.trim()) ids.push(id.trim());
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Compatible nodes are addressed as `{prefix}/{upstream}`. `parseModel` takes the first
+ * slash as the provider, and `stripRedundantNodePrefix` then peels `{prefix}/` off the
+ * remainder. That is correct when upstream ids are bare (`glm-5.2`) and wrong when the
+ * upstream id itself is branded (`euromodels/claude-fable-5`): both
+ * `euromodels/claude-fable-5` and `{nodeId}/euromodels/claude-fable-5` collapse to
+ * `claude-fable-5`, which 404s. Prefer a candidate that exists in the catalog.
+ */
+export function resolveCompatibleNodeModel(
+  parsedModel: string,
+  nodePrefix: unknown,
+  customModels: unknown,
+  syncedModels: unknown
+): string {
+  if (!parsedModel || typeof parsedModel !== "string") return parsedModel;
+  const prefix = typeof nodePrefix === "string" ? nodePrefix.trim() : "";
+  const stripped = stripRedundantNodePrefix(parsedModel, prefix);
+  const known = collectKnownModelIds(customModels, syncedModels);
+  const knownSet = new Set(known);
+  const knownLower = new Map(known.map((id) => [id.toLowerCase(), id] as const));
+
+  const candidates: string[] = [];
+  const add = (value: string | null | undefined) => {
+    if (!value || candidates.includes(value)) return;
+    candidates.push(value);
+  };
+  add(parsedModel);
+  if (prefix && !parsedModel.startsWith(`${prefix}/`)) add(`${prefix}/${parsedModel}`);
+  add(stripped);
+
+  for (const candidate of candidates) {
+    if (knownSet.has(candidate)) return candidate;
+    const ci = knownLower.get(candidate.toLowerCase());
+    if (ci) return ci;
+  }
+
+  const brandedCatalog = prefix.length > 0 && known.some((id) => id.startsWith(`${prefix}/`));
+  if (brandedCatalog) {
+    if (parsedModel.startsWith(`${prefix}/`)) return parsedModel;
+    return `${prefix}/${parsedModel}`;
+  }
+  return stripped;
+}
+
 async function lookupModelMeta(
   providerId: string,
-  modelId: string
+  modelId: string,
+  nodePrefix?: unknown
 ): Promise<{ modelId: string; metadata: RuntimeModelMeta }> {
   try {
     const [customModels, syncedModels] = await Promise.all([
       getCustomModels(providerId),
       getSyncedAvailableModels(providerId),
     ]);
+    const normalizedId =
+      nodePrefix !== undefined
+        ? resolveCompatibleNodeModel(modelId, nodePrefix, customModels, syncedModels)
+        : modelId;
     // #7694: no direct match on the raw modelId? try a synced-declared `-{effort}`
     // suffix before falling back to the literal id, so `<prefix>/<model>-<tier>`
     // resolves to the real base model + a resolved effort.
     const { modelId: resolvedModelId, effort } = resolveSyncedModelIdAndEffort(
       providerId,
-      modelId,
+      normalizedId,
       syncedModels
     );
     // #7364: exact match first; retain the case-insensitive custom-model fallback
@@ -287,13 +354,10 @@ export async function getModelInfo(modelStr) {
         (node) => node.prefix === prefixToCheck || node.id === prefixToCheck
       );
       if (matchedOpenAI) {
-        const normalizedModel = stripRedundantNodePrefix(
-          parsed.model as string,
-          matchedOpenAI.prefix
-        );
         const { modelId, metadata } = await lookupModelMeta(
           matchedOpenAI.id as string,
-          normalizedModel
+          parsed.model as string,
+          matchedOpenAI.prefix
         );
         return {
           provider: matchedOpenAI.id,
@@ -309,13 +373,10 @@ export async function getModelInfo(modelStr) {
         (node) => node.prefix === prefixToCheck || node.id === prefixToCheck
       );
       if (matchedAnthropic) {
-        const normalizedModel = stripRedundantNodePrefix(
-          parsed.model as string,
-          matchedAnthropic.prefix
-        );
         const { modelId, metadata } = await lookupModelMeta(
           matchedAnthropic.id as string,
-          normalizedModel
+          parsed.model as string,
+          matchedAnthropic.prefix
         );
         return {
           provider: matchedAnthropic.id,

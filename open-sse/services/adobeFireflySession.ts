@@ -72,6 +72,120 @@ const sessionCache = new Map<string, AdobeFireflySession>();
 const browserRefreshInFlight = new Map<string, Promise<AdobeFireflySession | null>>();
 /** Last ARP that produced HTTP 2xx on generate-async — prefer until colligo 408. */
 const lastWorkingArpByFingerprint = new Map<string, { arp: string; at: number }>();
+/** After a failed force-warm, skip re-launching Chrome for this fingerprint for a short window. */
+const browserWarmFailureCooldown = new Map<string, number>();
+const BROWSER_WARM_FAIL_COOLDOWN_MS = 90_000;
+/** Consecutive failed force-warms per browser key (drives exponential cooldown). */
+const browserWarmFailureCount = new Map<string, number>();
+/** Single-flight: one CDP profile warm per browser key; concurrent callers share the result. */
+const browserWarmInFlight = new Map<string, Promise<AdobeFireflySession | null>>();
+/** Last successful warm per key — callers holding an older session reuse it instead of relaunching Chrome. */
+const lastBrowserWarmSuccess = new Map<string, { at: number; session: AdobeFireflySession }>();
+const RECENT_WARM_REUSE_MS = 60_000;
+const BROWSER_WARM_FAIL_COOLDOWN_MAX_MS = 10 * 60_000;
+
+// ── Auth circuit breaker ────────────────────────────────────────────────────
+// When Adobe rejects a token (401/403 "Oauth token is not valid") and one renewal attempt did
+// not produce a working token, every queued/new request with that SAME token fails fast for a
+// while instead of each launching Chrome and waiting in the submit gate (observed: 98 requests
+// taking 26–62 minutes each to fail). Any different token (new sign-in / paste) clears it.
+interface AdobeAuthBreaker {
+  tokenHash: string;
+  until: number;
+  message: string;
+}
+const authBreakers = new Map<string, AdobeAuthBreaker>();
+function authBreakerTtlMs(): number {
+  const raw = Number(process.env.ADOBE_FIREFLY_AUTH_BREAKER_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10 * 60_000;
+}
+export function adobeFireflyTokenHash(token: string): string {
+  return createHash("sha256")
+    .update(String(token || "").trim())
+    .digest("hex")
+    .slice(0, 24);
+}
+export function markAdobeFireflyAuthDead(
+  fingerprint: string,
+  accessToken: string,
+  message: string
+): void {
+  const fp = String(fingerprint || "").trim();
+  if (!fp || !accessToken) return;
+  authBreakers.set(fp, {
+    tokenHash: adobeFireflyTokenHash(accessToken),
+    until: Date.now() + authBreakerTtlMs(),
+    message,
+  });
+}
+/** Returns the breaker message when this exact token was recently rejected, else "". */
+export function getAdobeFireflyAuthDeadMessage(fingerprint: string, accessToken: string): string {
+  const fp = String(fingerprint || "").trim();
+  const state = fp ? authBreakers.get(fp) : undefined;
+  if (!state) return "";
+  if (state.until <= Date.now() || state.tokenHash !== adobeFireflyTokenHash(accessToken)) {
+    authBreakers.delete(fp);
+    return "";
+  }
+  return state.message;
+}
+export function clearAdobeFireflyAuthDead(fingerprint: string): void {
+  authBreakers.delete(String(fingerprint || "").trim());
+}
+
+/** Reset every piece of per-account state (after a successful interactive sign-in). */
+export function resetAdobeFireflySessionState(connectionId: string): void {
+  const id = String(connectionId || "").trim();
+  if (!id) return;
+  const fp = fingerprintAdobeCredential(`conn:${id}`);
+  sessionCache.delete(fp);
+  lastWorkingArpByFingerprint.delete(fp);
+  authBreakers.delete(fp);
+  for (const key of [id, fp]) {
+    browserWarmFailureCooldown.delete(key);
+    browserWarmFailureCount.delete(key);
+    lastBrowserWarmSuccess.delete(key);
+  }
+}
+
+function isTestRuntime(): boolean {
+  return Boolean(
+    process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT
+  );
+}
+
+/**
+ * Sherlock-minted x-arp-session-id (the only ARP colligo accepts since 2026-09).
+ * Cached ~20 min and shared by all accounts. Tests never launch Chrome (cache only).
+ */
+export async function resolveAdobeFireflyMintedArp(opts?: {
+  forceNew?: boolean;
+  log?: AdobeFireflySessionResolveOpts["log"];
+}): Promise<string> {
+  if (!adobeFireflyBrowserEnabled() || process.env.ADOBE_FIREFLY_SHERLOCK_MINT === "0") return "";
+  try {
+    const mod = await import("./adobeFireflyBrowserLogin.ts");
+    if (isTestRuntime()) {
+      if (opts?.forceNew) mod.invalidateAdobeFireflyMintedArp();
+      return mod.getCachedAdobeFireflyMintedArp()?.token || "";
+    }
+    const minted = await mod.getAdobeFireflyMintedArp({ forceNew: opts?.forceNew, log: opts?.log });
+    return minted?.token || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Drop a minted ARP colligo rejected so the next resolve mints a fresh one. */
+export async function invalidateAdobeFireflyMintedArpToken(token: string): Promise<void> {
+  try {
+    const mod = await import("./adobeFireflyBrowserLogin.ts");
+    mod.invalidateAdobeFireflyMintedArp(token);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Serialize Firefly generate submits + enforce a quiet period (colligo rate-limits look like 408). */
 let adobeSubmitChain: Promise<void> = Promise.resolve();
 let lastAdobeSubmitAt = 0;
@@ -82,7 +196,7 @@ const WORKING_ARP_STICKY_MS = 25 * 60_000;
 const FORTER_STALE_MS = 4 * 60_000;
 /** After this many successful submits in a row, add an extra quiet period (colligo batch throttle). */
 const BATCH_SUCCESS_COOLDOWN_EVERY = 3;
-const BATCH_SUCCESS_EXTRA_GAP_MS = 15_000;
+const BATCH_SUCCESS_EXTRA_GAP_MS = 6_000;
 
 let consecutiveAdobeSubmitSuccesses = 0;
 
@@ -97,8 +211,8 @@ function minSubmitGapMs(): number {
   // Unit tests must not serialize multi-second gaps between cases that share the process-global gate.
   if (process.env.NODE_ENV === "test" || process.env.VITEST || process.env.NODE_TEST_CONTEXT)
     return 0;
-  // Live colligo rejects thrash after a few generates even with sticky ARP — 12s default.
-  return 12_000;
+  // With a Sherlock-minted ARP, 6s-spaced submits were accepted 3/3 live (2026-09-29).
+  return 6_000;
 }
 
 /** Extra gap after every N successful submits (mid-batch death defense). */
@@ -258,10 +372,15 @@ export async function withAdobeFireflySubmitGate<T>(fn: () => Promise<T>): Promi
     if (wait > 0) {
       await new Promise((r) => setTimeout(r, wait));
     }
+    let skipStamp = false;
     try {
       return await fn();
+    } catch (err) {
+      // A fail-fast rejection never reached Adobe — do not make the next request wait a gap.
+      if (err instanceof AdobeFireflyError && err.code === "auth_rejected") skipStamp = true;
+      throw err;
     } finally {
-      lastAdobeSubmitAt = Date.now();
+      if (!skipStamp) lastAdobeSubmitAt = Date.now();
     }
   });
   // Keep the chain alive even if fn throws
@@ -478,57 +597,189 @@ function collectCredentialBlobs(
  * Uses the same persistent pure-CDP profile as interactive sign-in, including in pkg builds.
  * Never throws — returns null when unavailable.
  */
+/**
+ * Best-effort write refreshed JWT+Cookie back to provider_connections so restarts
+ * and WinUI sync do not keep serving a guest/stale paste after a successful warm.
+ */
+async function writeBackAdobeFireflyCredentials(
+  session: AdobeFireflySession,
+  log?: AdobeFireflySessionResolveOpts["log"]
+): Promise<void> {
+  const connectionId = String(session.browserSessionKey || "").trim();
+  if (!connectionId || connectionId === "legacy-default") return;
+  if (!isAdobeUserAccessToken(session.accessToken)) return;
+  // Skip when connectionId looks like a credential fingerprint (32 hex) without a real UUID.
+  // Real OmniRoute connection ids are UUIDs; still attempt write-back for any non-empty key.
+  try {
+    const { updateProviderConnection } = await import("@/lib/db/providers");
+    const credential = serializeAdobeFireflyCredential(session);
+    await updateProviderConnection(connectionId, {
+      apiKey: credential,
+      providerSpecificData: {
+        mode: "browser-profile",
+        adobeFireflyMode: "browser-profile",
+        cookie: session.cookie || credential,
+        access_token: session.accessToken,
+        browserSessionKey: connectionId,
+        arpSessionId: session.arpSessionId || "",
+        refreshedAt: Date.now(),
+      },
+    });
+    log?.info?.(
+      "ADOBE-FIREFLY",
+      `wrote refreshed JWT+Cookie to connection ${connectionId.slice(0, 8)}…`
+    );
+  } catch (err) {
+    log?.warn?.(
+      "ADOBE-FIREFLY",
+      `credential write-back skipped: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 export async function refreshAdobeSessionViaBrowser(
   session: AdobeFireflySession,
   log?: AdobeFireflySessionResolveOpts["log"],
   opts?: { force?: boolean; proveWithPing?: boolean }
 ): Promise<AdobeFireflySession | null> {
-  const force = opts?.force === true;
   // Browser warm is the default engine now — only the explicit kill switch disables it.
   if (!adobeFireflyBrowserEnabled()) return null;
+  // Unit tests must never spawn a real Chrome (they did, adding ~2 min to the suite).
+  if (isTestRuntime() && process.env.ADOBE_FIREFLY_TEST_ALLOW_BROWSER !== "1") return null;
+  const coolKey = String(session.browserSessionKey || session.fingerprint || "").trim();
+  if (!coolKey) return doRefreshAdobeSessionViaBrowser(session, log, opts);
+
+  const coolUntil = browserWarmFailureCooldown.get(coolKey) || 0;
+  if (opts?.force === true && coolUntil > Date.now()) {
+    log?.warn?.(
+      "ADOBE-FIREFLY",
+      `skip CDP warm (cooldown ${Math.ceil((coolUntil - Date.now()) / 1000)}s after recent failure)`
+    );
+    return null;
+  }
+
+  // A warm finished moments ago: callers still holding the pre-warm session get its result.
+  // A caller that already HAS that result (and still failed) gets null — relaunching Chrome
+  // seconds later would only mint the same token again.
+  const recent = lastBrowserWarmSuccess.get(coolKey);
+  if (recent && Date.now() - recent.at < RECENT_WARM_REUSE_MS) {
+    if (recent.session.accessToken !== session.accessToken) {
+      return { ...recent.session, fingerprint: session.fingerprint };
+    }
+    return null;
+  }
+
+  let inflight = browserWarmInFlight.get(coolKey);
+  if (!inflight) {
+    inflight = doRefreshAdobeSessionViaBrowser(session, log, opts)
+      .then((result) => {
+        if (result) {
+          browserWarmFailureCount.delete(coolKey);
+          lastBrowserWarmSuccess.set(coolKey, { at: Date.now(), session: result });
+        } else if (opts?.force === true) {
+          const failures = (browserWarmFailureCount.get(coolKey) || 0) + 1;
+          browserWarmFailureCount.set(coolKey, failures);
+          const cooldown = Math.min(
+            BROWSER_WARM_FAIL_COOLDOWN_MAX_MS,
+            BROWSER_WARM_FAIL_COOLDOWN_MS * 2 ** (failures - 1)
+          );
+          browserWarmFailureCooldown.set(coolKey, Date.now() + cooldown);
+        }
+        return result;
+      })
+      .finally(() => {
+        browserWarmInFlight.delete(coolKey);
+      });
+    browserWarmInFlight.set(coolKey, inflight);
+  }
+  const shared = await inflight;
+  return shared ? { ...shared, fingerprint: session.fingerprint } : null;
+}
+
+async function doRefreshAdobeSessionViaBrowser(
+  session: AdobeFireflySession,
+  log?: AdobeFireflySessionResolveOpts["log"],
+  opts?: { force?: boolean; proveWithPing?: boolean }
+): Promise<AdobeFireflySession | null> {
+  const force = opts?.force === true;
+  const coolKey = String(session.browserSessionKey || session.fingerprint || "").trim();
 
   try {
+    const baseFtr = extractAdobeForterTimestampMs(session.cookie || "");
     const { refreshAdobeFireflyViaCdp } = await import("./adobeFireflyBrowserLogin.ts");
     const warmed = await refreshAdobeFireflyViaCdp({
       cookie: session.cookie,
       accessToken: session.accessToken,
       log,
       timeoutMs: force ? 90_000 : 75_000,
-      sessionKey: session.browserSessionKey,
+      sessionKey: session.browserSessionKey || session.fingerprint,
     });
-    if (!warmed) return null;
+    if (!warmed) {
+      if (force && coolKey) {
+        browserWarmFailureCooldown.set(coolKey, Date.now() + BROWSER_WARM_FAIL_COOLDOWN_MS);
+      }
+      return null;
+    }
+    if (coolKey) browserWarmFailureCooldown.delete(coolKey);
 
-    const nextCookie = mergeAdobeCookieHeaders(session.cookie, warmed.cookie || "");
+    // Prefer warm cookie as authority for risk pieces (do not re-merge stale forter over new).
+    // On force warm, prefer the warmed cookie as authority (do not re-merge hours-old forter
+    // from the previous session blob over a freshly minted jar).
+    const nextCookie = force
+      ? warmed.cookie || session.cookie
+      : warmed.cookie
+        ? mergeAdobeCookieHeaders(session.cookie || "", warmed.cookie)
+        : session.cookie;
+    const warmFtr = extractAdobeForterTimestampMs(nextCookie);
+    const warmAge = warmFtr > 0 ? Math.max(0, Date.now() - warmFtr) : Number.POSITIVE_INFINITY;
+    // Force path: require a parseable forter younger than FORTER_STALE (or strictly newer than base).
+    if (force) {
+      const advanced =
+        warmFtr > 0 && (baseFtr <= 0 || warmFtr > baseFtr || warmAge < FORTER_STALE_MS);
+      if (!advanced) {
+        log?.warn?.(
+          "ADOBE-FIREFLY",
+          `CDP warm rejected: forter not advanced (base=${baseFtr}, warm=${warmFtr || 0}, ageMs=${Number.isFinite(warmAge) ? warmAge : "inf"})`
+        );
+        return null;
+      }
+    }
+
     const nextArp =
       warmed.arpSessionId ||
       buildAdobeArpSessionIdFromCookies(nextCookie) ||
       extractAdobeArpSessionId(nextCookie);
     if (!nextArp) return null;
 
+    const nextToken =
+      (warmed.accessToken && isAdobeUserAccessToken(warmed.accessToken)
+        ? warmed.accessToken
+        : "") || session.accessToken;
+    if (!isAdobeUserAccessToken(nextToken)) return null;
+
     const next: AdobeFireflySession = {
       ...session,
-      accessToken: warmed.accessToken || session.accessToken,
+      accessToken: nextToken,
       cookie: nextCookie,
       arpSessionId: nextArp,
-      tokenExpiresAt: estimateAdobeTokenExpiry(warmed.accessToken || session.accessToken),
+      tokenExpiresAt: estimateAdobeTokenExpiry(nextToken),
       updatedAt: Date.now(),
+      browserSessionKey: session.browserSessionKey || session.fingerprint,
       source: "browser",
     };
-    // When warm returns a fresher forter, prefer its cookie entirely for ARP rebuild pieces.
-    const warmFtr = extractAdobeForterTimestampMs(nextCookie);
-    const baseFtr = extractAdobeForterTimestampMs(session.cookie || "");
-    if (warmFtr > baseFtr && warmed.cookie) {
-      next.cookie = mergeAdobeCookieHeaders(session.cookie, warmed.cookie);
-    }
     sessionCache.set(session.fingerprint, next);
     saveDiskSession(next);
     clearAdobeFireflyWorkingArp(session.fingerprint);
+    void writeBackAdobeFireflyCredentials(next, log);
     log?.info?.(
       "ADOBE-FIREFLY",
-      `durable CDP warm refreshed session (arpLen=${next.arpSessionId.length}, force=${force}, forterTs=${warmFtr || 0})`
+      `durable CDP warm refreshed session (arpLen=${next.arpSessionId.length}, force=${force}, forterTs=${warmFtr || 0}, forterDeltaMs=${warmFtr && baseFtr ? warmFtr - baseFtr : 0})`
     );
     return next;
   } catch (err) {
+    if (force && coolKey) {
+      browserWarmFailureCooldown.set(coolKey, Date.now() + BROWSER_WARM_FAIL_COOLDOWN_MS);
+    }
     log?.warn?.(
       "ADOBE-FIREFLY",
       `browser CDP session refresh failed: ${err instanceof Error ? err.message : String(err)}`
@@ -555,19 +806,36 @@ export async function ensureAdobeFireflySession(
   }
 
   const joined = blobs.join("\n");
-  const fingerprint = fingerprintAdobeCredential(joined);
-  const browserSessionKey =
-    String(
-      opts.credentials?.connectionId ||
-        opts.credentials?.providerSpecificData?.browserSessionKey ||
-        fingerprint
-    ).trim() || fingerprint;
+  // Prefer stable connection-scoped fingerprint so JWT/cookie refresh does not orphan
+  // the session cache / sticky ARP map (paste hash changes every warm write-back).
+  const connectionId = String(
+    opts.credentials?.connectionId ||
+      opts.credentials?.providerSpecificData?.browserSessionKey ||
+      ""
+  ).trim();
+  const fingerprint = connectionId
+    ? fingerprintAdobeCredential(`conn:${connectionId}`)
+    : fingerprintAdobeCredential(joined);
+  const browserSessionKey = connectionId || fingerprint;
 
   // forceRefresh / rotate always drop in-memory cache for this fingerprint
   if (opts.forceRefresh) sessionCache.delete(fingerprint);
 
-  const cached = sessionCache.get(fingerprint) || loadDiskSession(fingerprint);
-  if (cached && !opts.forceRefresh) sessionCache.set(fingerprint, cached);
+  // Also try legacy paste-hash session files (pre-connection-scoped fingerprints).
+  const legacyFingerprint = fingerprintAdobeCredential(joined);
+  const cached =
+    sessionCache.get(fingerprint) ||
+    loadDiskSession(fingerprint) ||
+    (legacyFingerprint !== fingerprint ? loadDiskSession(legacyFingerprint) : null);
+  if (cached && !opts.forceRefresh) {
+    // Re-key legacy disk session under the stable connection fingerprint.
+    const normalized = {
+      ...cached,
+      fingerprint,
+      browserSessionKey: cached.browserSessionKey || browserSessionKey,
+    };
+    sessionCache.set(fingerprint, normalized);
+  }
 
   const fetchImpl = opts.fetchImpl || fetch;
   let accessToken = "";
@@ -618,10 +886,20 @@ export async function ensureAdobeFireflySession(
 
   // Cookie-only or near-expiry JWT → try IMS exchange (needs real IMS cookies on adobelogin.com)
   const tokenExpiresAt = accessToken ? estimateAdobeTokenExpiry(accessToken) : 0;
+  // A valid (non-expiring) user JWT from the cache is as good as a pasted one — do not run the
+  // 2–4 IMS round-trips on every request for it (they only ever yield guest tokens from
+  // firefly.adobe.com cookies anyway).
   const needJwtRefresh =
     !accessToken ||
-    !pasteHadUserJwt ||
+    !isAdobeUserAccessToken(accessToken) ||
     (tokenExpiresAt > 0 && tokenExpiresAt - Date.now() < JWT_REFRESH_SKEW_MS);
+  void pasteHadUserJwt;
+
+  // Fail fast when Adobe already rejected this exact token and renewal did not help.
+  const deadMessage = accessToken ? getAdobeFireflyAuthDeadMessage(fingerprint, accessToken) : "";
+  if (deadMessage) {
+    throw new AdobeFireflyError(deadMessage, 401, "auth_rejected");
+  }
 
   if (needJwtRefresh && cookie) {
     try {
@@ -676,12 +954,14 @@ export async function ensureAdobeFireflySession(
     accessToken,
     cookie: cookieForSession,
     arpSessionId: String(arpSessionId || ""),
-    tokenExpiresAt: estimateAdobeTokenExpiry(accessToken),
+    tokenExpiresAt: estimateAdobeTokenExpiry(accessToken || cached?.accessToken || ""),
     updatedAt: Date.now(),
     fingerprint,
     browserSessionKey,
     source: workingFresh ? "cache" : cached?.source || "paste",
   };
+  // Prefer connection-scoped browser profile always (never empty → legacy-default).
+  if (!session.browserSessionKey) session.browserSessionKey = browserSessionKey;
 
   // Off-screen Chrome Forter-warm is now the DEFAULT engine (kill switch:
   // ADOBE_FIREFLY_BROWSER_REFRESH=0). Warm proactively when we lack a usable session so the
@@ -693,42 +973,44 @@ export async function ensureAdobeFireflySession(
   const jwtIsUser = isAdobeUserAccessToken(session.accessToken);
   const jwtNeedsBrowserRefresh =
     !jwtIsUser || session.tokenExpiresAt - Date.now() < JWT_REFRESH_SKEW_MS;
+
+  // Sherlock-minted ARP: account-independent, cached ~20 min. When available it replaces every
+  // cookie-derived ARP and makes the Forter "stale cookie" heuristics irrelevant.
+  const mintedArp =
+    opts.allowBrowserRefresh !== false
+      ? await resolveAdobeFireflyMintedArp({ forceNew: Boolean(opts.rotateArp), log: opts.log })
+      : "";
+
   const forterAgeMs = getAdobeForterAgeMs(session.cookie);
-  const riskStale = !workingFresh && forterAgeMs > FORTER_PROACTIVE_WARM_MS;
+  const riskStale = !mintedArp && !workingFresh && forterAgeMs > FORTER_PROACTIVE_WARM_MS;
   const shouldWarm =
     adobeFireflyBrowserEnabled() &&
     opts.allowBrowserRefresh !== false &&
-    (opts.forceRefresh || opts.rotateArp || jwtNeedsBrowserRefresh || riskStale);
-  // A persistent signed-in browser profile can refresh even when the stored cookie is empty.
-  const canWarm = true;
-  if (shouldWarm && canWarm) {
-    const key = fingerprint;
-    let inflight = browserRefreshInFlight.get(key);
-    if (!inflight) {
-      inflight = refreshAdobeSessionViaBrowser(session, opts.log, {
-        force: true,
-        proveWithPing: Boolean(opts.forceRefresh),
-      }).finally(() => {
-        browserRefreshInFlight.delete(key);
-      });
-      browserRefreshInFlight.set(key, inflight);
-    }
-    const warmed = await inflight;
+    (opts.forceRefresh || jwtNeedsBrowserRefresh || riskStale || (opts.rotateArp && !mintedArp));
+  if (shouldWarm) {
+    // Single-flight per account lives inside refreshAdobeSessionViaBrowser.
+    const warmed = await refreshAdobeSessionViaBrowser(session, opts.log, {
+      force: true,
+      proveWithPing: Boolean(opts.forceRefresh),
+    });
     if (warmed) {
       session = { ...warmed, fingerprint };
       opts.log?.info?.(
         "ADOBE-FIREFLY",
-        `durable CDP session warm applied (reason=${opts.forceRefresh ? "force" : opts.rotateArp ? "rotate" : jwtNeedsBrowserRefresh ? "jwt-expiry" : "stale-forter"})`
+        `durable CDP session warm applied (reason=${opts.forceRefresh ? "force" : jwtNeedsBrowserRefresh ? "jwt-expiry" : opts.rotateArp ? "rotate" : "stale-forter"})`
       );
     }
   }
+  void browserRefreshInFlight;
+
+  if (mintedArp) session.arpSessionId = mintedArp;
 
   // Final ARP if still empty
   if (!session.arpSessionId) {
     session.arpSessionId = resolveAdobeArpSessionIdSmart(session.cookie || joined);
   }
   // Re-apply sticky working ARP if warm did not produce a newer forter-based ARP
-  if (workingFresh && !opts.forceRefresh && !opts.rotateArp) {
+  if (!mintedArp && workingFresh && !opts.forceRefresh && !opts.rotateArp) {
     const warmForterTs = extractAdobeForterTimestampMs(session.cookie);
     if (!(warmForterTs > forterTs)) {
       session.arpSessionId = workingFresh;
@@ -755,8 +1037,40 @@ export async function ensureAdobeFireflySession(
     );
   }
 
+  // Dead Forter risk session: colligo returns 408 for ~minutes/hours of retries. Fail closed
+  // with a re-login instruction instead of burning ~600s of generate-async attempts.
+  // Only when forter timestamp is parseable and old — missing timestamp is not treated as stale
+  // (JWT-only / synthetic ARP / unit fixtures).
+  const finalForterTs = extractAdobeForterTimestampMs(session.cookie);
+  const finalForterAge = getAdobeForterAgeMs(session.cookie);
+  const hasStickyWorking =
+    Boolean(workingFresh) &&
+    Date.now() - (lastWorkingArpByFingerprint.get(fingerprint)?.at || 0) < WORKING_ARP_STICKY_MS;
+  if (
+    !mintedArp &&
+    finalForterTs > 0 &&
+    Number.isFinite(finalForterAge) &&
+    finalForterAge > FORTER_STALE_MS &&
+    !hasStickyWorking &&
+    opts.allowBrowserRefresh !== false
+  ) {
+    throw new AdobeFireflyError(
+      "Adobe Firefly could not mint a fresh risk token (x-arp-session-id). VibeProxy mints it in " +
+        "an off-screen Google Chrome / Microsoft Edge window — make sure one of them is installed " +
+        "and not blocked, then retry in a minute.",
+      503,
+      "risk_token_unavailable"
+    );
+  }
+
+  session.fingerprint = fingerprint;
+  session.browserSessionKey = session.browserSessionKey || browserSessionKey;
   sessionCache.set(fingerprint, session);
   saveDiskSession(session);
+  // Keep SQLite in sync when we have a real connection + user JWT (best-effort).
+  if (session.source === "browser" || session.source === "rebuild") {
+    void writeBackAdobeFireflyCredentials(session, opts.log);
+  }
   return session;
 }
 
@@ -793,6 +1107,37 @@ export async function rotateAdobeFireflySessionOnError(
   // Unknown age (synthetic ARP / tests) keeps the quiet 1–2 reuse path.
   const forterKnownStale = forterAgeMs != null && forterAgeMs > FORTER_STALE_MS;
 
+  // 408 with the Sherlock mint available: a cookie-derived ARP is always rejected now, so switch
+  // to a minted one. A rejected minted ARP is re-minted immediately — live, resubmitting it
+  // always 408s again, and every extra rejected submit risks Adobe revoking the IMS session
+  // (401013 "Oauth token is not valid").
+  if (!opts?.authFailure && opts?.tryBrowser !== false) {
+    const { isSherlockMintedArp } = await import("./adobeFireflyBrowserLogin.ts");
+    const currentIsMinted = isSherlockMintedArp(prevArp);
+    {
+      if (currentIsMinted) await invalidateAdobeFireflyMintedArpToken(prevArp);
+      const minted = await resolveAdobeFireflyMintedArp({
+        forceNew: currentIsMinted,
+        log: opts?.log,
+      });
+      if (minted && minted !== prevArp) {
+        const next: AdobeFireflySession = {
+          ...session,
+          arpSessionId: minted,
+          updatedAt: Date.now(),
+          source: "rebuild",
+        };
+        sessionCache.set(session.fingerprint, next);
+        saveDiskSession(next);
+        opts?.log?.info?.(
+          "ADOBE-FIREFLY",
+          `408 recovery: switched to ${currentIsMinted ? "re-minted" : "minted"} Sherlock ARP (attempt ${attempt})`
+        );
+        return next;
+      }
+    }
+  }
+
   // Attempt 1–2 when forter is not known-stale: keep same ARP (colligo short load / rate limit).
   // Hours-old forter → skip quiet reuse and warm Chrome immediately (else all 5 attempts 408).
   if (attempt <= 2 && !forterKnownStale && !opts?.authFailure) {
@@ -810,8 +1155,9 @@ export async function rotateAdobeFireflySessionOnError(
     return same;
   }
 
-  // Known-stale forter or attempt 3+: cookie rebuild is a no-op. Off-screen headed Chrome mints a
-  // fresh Forter/ARP (headless browsers are rejected by colligo, so CDP uses off-screen headed mode).
+  // Known-stale forter or attempt 3+: cookie rebuild is a no-op. CDP warm mints a fresh
+  // Forter/ARP via offscreen headed Chrome by default (colligo rejects true headless).
+  // ADOBE_FIREFLY_CHROME_HEADLESS=1 is debug-only and usually keeps returning 408.
   clearAdobeFireflyWorkingArp(session.fingerprint);
   noteAdobeFireflySubmitFailure();
 
@@ -857,6 +1203,11 @@ export function __resetAdobeFireflySessionCacheForTests(): void {
   sessionCache.clear();
   browserRefreshInFlight.clear();
   lastWorkingArpByFingerprint.clear();
+  browserWarmFailureCooldown.clear();
+  browserWarmFailureCount.clear();
+  browserWarmInFlight.clear();
+  lastBrowserWarmSuccess.clear();
+  authBreakers.clear();
   lastAdobeSubmitAt = 0;
   consecutiveAdobeSubmitSuccesses = 0;
   adobeSubmitChain = Promise.resolve();

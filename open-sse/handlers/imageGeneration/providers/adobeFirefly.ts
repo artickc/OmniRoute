@@ -18,6 +18,7 @@ import {
   adobeFireflyImageTimeoutMs,
   resolveAdobeSourceImageReferences,
   resolveAdobeImageModel,
+  resolveAdobeModelWithDiscovery,
 } from "../../../services/adobeFireflyClient.ts";
 import { getAdobeReferenceUploadLimit } from "../../../services/adobeFireflyModels.ts";
 import { ensureAdobeFireflySession } from "../../../services/adobeFireflySession.ts";
@@ -50,7 +51,17 @@ export async function handleAdobeFireflyImageGeneration({
     images?: unknown;
     [key: string]: unknown;
   };
-  credentials: { apiKey?: string; accessToken?: string };
+  credentials: {
+    apiKey?: string;
+    accessToken?: string;
+    connectionId?: string;
+    providerSpecificData?: {
+      cookie?: unknown;
+      access_token?: unknown;
+      accessToken?: unknown;
+      browserSessionKey?: unknown;
+    } | null;
+  };
   log?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
   fetchImpl?: typeof fetch;
 }) {
@@ -81,8 +92,19 @@ export async function handleAdobeFireflyImageGeneration({
   }
 
   try {
+    // Unknown model ids: only worth a session (Chrome mint / warm) when live discovery may know
+    // them — resolved after ensure via resolveAdobeModelWithDiscovery.
+    let modelKnown = true;
+    try {
+      resolveAdobeImageModel(model);
+    } catch {
+      modelKnown = false;
+    }
     const session = await ensureAdobeFireflySession({ credentials, fetchImpl, log });
     const accessToken = session.accessToken;
+    if (!modelKnown) {
+      await resolveAdobeModelWithDiscovery("image", model, accessToken, fetchImpl);
+    }
     const sessionCookie = session.cookie || undefined;
     const arpSessionId = session.arpSessionId;
     const seed =
@@ -137,6 +159,7 @@ export async function handleAdobeFireflyImageGeneration({
       sessionCookie,
       arpSessionId,
       sessionFingerprint: session.fingerprint,
+      sessionBrowserKey: session.browserSessionKey,
       timeoutMs,
       fetchImpl,
       log,

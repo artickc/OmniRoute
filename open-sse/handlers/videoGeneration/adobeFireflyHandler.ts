@@ -11,6 +11,7 @@ import {
   adobeFireflyGenerateVideo,
   resolveAdobeSourceImageReferences,
   resolveAdobeVideoModel,
+  resolveAdobeModelWithDiscovery,
 } from "../../services/adobeFireflyClient.ts";
 import { getAdobeReferenceUploadLimit } from "../../services/adobeFireflyModels.ts";
 import { ensureAdobeFireflySession } from "../../services/adobeFireflySession.ts";
@@ -32,7 +33,17 @@ export async function handleAdobeFireflyVideoGeneration({
   provider: string;
   providerConfig?: { baseUrl?: string };
   body: Record<string, unknown>;
-  credentials?: { apiKey?: string; accessToken?: string } | null;
+  credentials?: {
+    apiKey?: string;
+    accessToken?: string;
+    connectionId?: string;
+    providerSpecificData?: {
+      cookie?: unknown;
+      access_token?: unknown;
+      accessToken?: unknown;
+      browserSessionKey?: unknown;
+    } | null;
+  } | null;
   log?: { info?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void };
   fetchImpl?: typeof fetch;
 }) {
@@ -47,12 +58,21 @@ export async function handleAdobeFireflyVideoGeneration({
   }
 
   try {
+    let modelKnown = true;
+    try {
+      resolveAdobeVideoModel(String(model));
+    } catch {
+      modelKnown = false;
+    }
     const session = await ensureAdobeFireflySession({
       credentials,
       fetchImpl,
       log,
     });
     const accessToken = session.accessToken;
+    if (!modelKnown) {
+      await resolveAdobeModelWithDiscovery("video", String(model), accessToken, fetchImpl);
+    }
     const sessionCookie = session.cookie || undefined;
     const arpSessionId = session.arpSessionId;
     const timeoutMs = normalizePositiveNumber(body.timeout_ms, 300_000);
@@ -102,6 +122,7 @@ export async function handleAdobeFireflyVideoGeneration({
       sessionCookie,
       arpSessionId,
       sessionFingerprint: session.fingerprint,
+      sessionBrowserKey: session.browserSessionKey,
       timeoutMs,
       fetchImpl,
       log,

@@ -19,6 +19,12 @@ import {
   META_AI_USER_AGENT,
   buildMetaAiValidationBody,
 } from "./metaAi";
+import {
+  looksLikeJwt,
+  resolveSyntxToken,
+  syntxAuthHeaders,
+} from "@omniroute/open-sse/services/syntxAuth.ts";
+import { SYNTX_MODELS_URL } from "@omniroute/open-sse/services/syntxModels.ts";
 
 export async function validateMuseSparkWebProvider({ apiKey, providerSpecificData = {} }: any) {
   try {
@@ -313,7 +319,10 @@ export async function validateCopilotWebProvider({ apiKey, providerSpecificData 
   }
 }
 
-export function extractM365CredentialParts(raw: string, providerSpecificData: Record<string, unknown>) {
+export function extractM365CredentialParts(
+  raw: string,
+  providerSpecificData: Record<string, unknown>
+) {
   const text = raw.trim();
   const parts: Record<string, string> = {};
 
@@ -332,9 +341,10 @@ export function extractM365CredentialParts(raw: string, providerSpecificData: Re
   if (/^wss:\/\//i.test(text)) {
     try {
       const url = new URL(text);
-      const hostOk = /^(?:[\w-]+\.)*(?:m365\.cloud\.microsoft|copilot\.microsoft\.com|substrate\.office\.com)$/i.test(
-        url.hostname
-      );
+      const hostOk =
+        /^(?:[\w-]+\.)*(?:m365\.cloud\.microsoft|copilot\.microsoft\.com|substrate\.office\.com)$/i.test(
+          url.hostname
+        );
       if (hostOk && url.pathname.startsWith("/m365Copilot/Chathub/")) {
         parts.access_token ||= url.searchParams.get("access_token") || "";
         parts.chathubPath ||= decodeURIComponent(
@@ -353,7 +363,9 @@ export function extractM365CredentialParts(raw: string, providerSpecificData: Re
       (typeof providerSpecificData.access_token === "string"
         ? providerSpecificData.access_token
         : "") ||
-      (typeof providerSpecificData.accessToken === "string" ? providerSpecificData.accessToken : ""),
+      (typeof providerSpecificData.accessToken === "string"
+        ? providerSpecificData.accessToken
+        : ""),
     chathubPath:
       parts.chathubPath ||
       parts.userTenant ||
@@ -365,10 +377,7 @@ export function extractM365CredentialParts(raw: string, providerSpecificData: Re
 }
 
 // ── Microsoft 365 Copilot Web token validator ──
-export async function validateCopilotM365WebProvider({
-  apiKey,
-  providerSpecificData = {},
-}: any) {
+export async function validateCopilotM365WebProvider({ apiKey, providerSpecificData = {} }: any) {
   const { accessToken, chathubPath } = extractM365CredentialParts(
     String(apiKey || ""),
     providerSpecificData
@@ -644,6 +653,94 @@ export async function validateInnerAiProvider({ apiKey, providerSpecificData = {
     }
 
     return { valid: true, error: null };
+  } catch (error: any) {
+    return toValidationErrorResult(error);
+  }
+}
+
+export async function validateSyntxProvider({
+  apiKey,
+  providerSpecificData = {},
+  accessToken,
+}: any) {
+  try {
+    const token = resolveSyntxToken({ apiKey, accessToken, providerSpecificData });
+    if (!looksLikeJwt(token)) {
+      return {
+        valid: false,
+        error: "Paste your SYNTX.ai Bearer JWT from syntx.ai DevTools → Network → api.syntx.ai",
+      };
+    }
+
+    const response = await validationRead(SYNTX_MODELS_URL, {
+      method: "GET",
+      headers: applyCustomUserAgent(syntxAuthHeaders(token), providerSpecificData),
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        valid: false,
+        error: "Invalid or expired SYNTX JWT — re-paste Authorization Bearer from syntx.ai",
+      };
+    }
+    if (response.status >= 500) {
+      return { valid: false, error: `SYNTX unavailable (${response.status})` };
+    }
+    if (response.ok) return { valid: true, error: null };
+    return { valid: false, error: `SYNTX validation failed (${response.status})` };
+  } catch (error: any) {
+    return toValidationErrorResult(error);
+  }
+}
+
+/**
+ * Adobe Firefly "Test Connection": resolve the best stored IMS JWT (durable session cache —
+ * never launches Chrome) and probe the read-only credits balance endpoint. Previously there was
+ * no validator, so every test reported "Provider test not supported" and flagged the account red.
+ */
+export async function validateAdobeFireflyProvider({ apiKey, providerSpecificData = {} }: any) {
+  try {
+    const { ensureAdobeFireflySession } =
+      await import("@omniroute/open-sse/services/adobeFireflySession.ts");
+    const { fetchAdobeCreditsBalance, AdobeFireflyError } =
+      await import("@omniroute/open-sse/services/adobeFireflyClient.ts");
+    let token = "";
+    try {
+      const session = await ensureAdobeFireflySession({
+        credentials: {
+          apiKey,
+          providerSpecificData,
+          connectionId:
+            typeof providerSpecificData?.browserSessionKey === "string"
+              ? providerSpecificData.browserSessionKey
+              : undefined,
+        },
+        allowBrowserRefresh: false,
+      });
+      token = session.accessToken;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { valid: false, error: message.slice(0, 400) };
+    }
+    try {
+      const balance = await fetchAdobeCreditsBalance(token);
+      const remaining = Math.max(0, Math.round(balance.remaining));
+      return {
+        valid: true,
+        error: null,
+        ...(remaining <= 0 ? { warning: "Adobe Firefly credits balance is 0" } : {}),
+      };
+    } catch (err) {
+      if (err instanceof AdobeFireflyError && err.status === 401) {
+        return {
+          valid: false,
+          error:
+            "Adobe rejected the stored sign-in token (signed out or expired). Use Add Account " +
+            "(OAuth) → Sign in with browser again.",
+        };
+      }
+      return toValidationErrorResult(err);
+    }
   } catch (error: any) {
     return toValidationErrorResult(error);
   }

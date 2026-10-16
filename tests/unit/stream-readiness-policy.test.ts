@@ -238,6 +238,43 @@ test("caps Claude-format replica bump at the configured maxTimeoutMs", () => {
   assert.ok(result.reasons.includes("claude_format_heavy_reasoning"));
 });
 
+test("gives SYNTX a 10-minute readiness window even when the global cap is 180s", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "syntx",
+    model: "claude-fable-5-1",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 600_000);
+  assert.ok(result.reasons.includes("syntx_slow_generate"));
+});
+
+test("SYNTX alias stx gets the same 10-minute readiness window", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    maxTimeoutMs: 180_000,
+    provider: "stx",
+    model: "gpt-5-nano-2025-08-07",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 600_000);
+  assert.ok(result.reasons.includes("syntx_slow_generate"));
+});
+
+test("SYNTX still honors a disabled (0) readiness gate", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 0,
+    provider: "syntx",
+    model: "claude-fable-5-1",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 0);
+  assert.deepEqual(result.reasons, ["disabled"]);
+});
+
 test("treats unknown provider names as non-Claude-format (no false positives)", () => {
   const result = resolveStreamReadinessTimeout({
     baseTimeoutMs: 80_000,

@@ -2,7 +2,7 @@ export const ANTIGRAVITY_CLIENT_PROFILE_VALUES = ["ide", "cli"] as const;
 
 export type AntigravityClientProfile = (typeof ANTIGRAVITY_CLIENT_PROFILE_VALUES)[number];
 
-export const DEFAULT_ANTIGRAVITY_CLIENT_PROFILE: AntigravityClientProfile = "ide";
+export const DEFAULT_ANTIGRAVITY_CLIENT_PROFILE: AntigravityClientProfile = "cli";
 
 export type AntigravityClientProfileSetting = AntigravityClientProfile;
 

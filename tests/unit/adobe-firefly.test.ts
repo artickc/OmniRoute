@@ -1096,6 +1096,52 @@ test("sticky ARP: successful submit is reused by ensure on next call", async () 
   assert.equal(session.fingerprint, fp);
 });
 
+test("connectionId fingerprint stays stable when JWT/cookie paste changes", async () => {
+  const {
+    __resetAdobeFireflySessionCacheForTests,
+    ensureAdobeFireflySession,
+    fingerprintAdobeCredential,
+    markAdobeFireflyArpSuccess,
+  } = await import("../../open-sse/services/adobeFireflySession.ts");
+  const { ADOBE_FIREFLY_FTR_MAGIC } = await import("../../open-sse/services/adobeFireflyClient.ts");
+  __resetAdobeFireflySessionCacheForTests();
+
+  const connectionId = "11111111-2222-3333-4444-555555555555";
+  const expectedFp = fingerprintAdobeCredential(`conn:${connectionId}`);
+  const stickyArp = Buffer.from(
+    JSON.stringify({ sid: "conn-sid", ark: "conn-ark", ftr: "conn-ftr" }),
+    "utf8"
+  ).toString("base64");
+  markAdobeFireflyArpSuccess(expectedFp, stickyArp);
+
+  const ftr = `bb_${Date.now()}${ADOBE_FIREFLY_FTR_MAGIC}_x=-1-v2_tt`;
+  const cookie = `ff_session_guid=guid-1; arkose=ark-1; forterToken=${encodeURIComponent(ftr)}`;
+  const credA = `${userImsJwt()}\n${cookie}`;
+  const credB = `${userImsJwt()}\n${cookie}; aux_sid=changed`;
+
+  const s1 = await ensureAdobeFireflySession({
+    credentials: { apiKey: credA, connectionId },
+    allowBrowserRefresh: false,
+    fetchImpl: (async () => {
+      throw new Error("no network");
+    }) as typeof fetch,
+  });
+  const s2 = await ensureAdobeFireflySession({
+    credentials: { apiKey: credB, connectionId },
+    allowBrowserRefresh: false,
+    fetchImpl: (async () => {
+      throw new Error("no network");
+    }) as typeof fetch,
+  });
+  assert.equal(s1.fingerprint, expectedFp);
+  assert.equal(s2.fingerprint, expectedFp);
+  assert.equal(s1.browserSessionKey, connectionId);
+  assert.equal(s2.browserSessionKey, connectionId);
+  assert.equal(s1.arpSessionId, stickyArp);
+  assert.equal(s2.arpSessionId, stickyArp);
+  assert.notEqual(fingerprintAdobeCredential(credA), fingerprintAdobeCredential(credB));
+});
+
 test("rotateAdobeFireflySessionOnError: attempt1-2 reuse sticky; attempt3 keeps ARP without browser", async () => {
   const {
     __resetAdobeFireflySessionCacheForTests,
@@ -1212,4 +1258,123 @@ test("adobeFireflyGenerateImage cookie path exchanges IMS token first", async ()
   assert.equal(result.success, true);
   assert.ok(urls.some((u) => u.includes("ims/check")));
   assert.ok(urls.some((u) => u.includes("generate-async")));
+});
+
+// --- 2026-09-29 stability fixes -------------------------------------------------
+
+test("gpt-image-1.5 payload snaps to the discovered size enum (no 2304x1728 400)", async () => {
+  const { buildAdobeImagePayload, resolveAdobeImageModel, snapAdobeImageSize } =
+    await import("../../open-sse/services/adobeFireflyClient.ts");
+  const { spec } = resolveAdobeImageModel("gpt-image-1.5");
+  const payload = buildAdobeImagePayload({
+    prompt: "x",
+    aspectRatio: "4:3",
+    outputResolution: "2K",
+    modelSpec: spec,
+  });
+  assert.equal(
+    (payload.modelSpecificPayload as { size: string }).size,
+    "1536x1024",
+    "4:3 must map to the closest supported landscape size"
+  );
+  assert.deepEqual(snapAdobeImageSize([], "1:1", { width: 10, height: 10 }), null);
+  // gpt-image-2 has no enum → keeps the explicit tier size.
+  const flexible = buildAdobeImagePayload({
+    prompt: "x",
+    aspectRatio: "4:3",
+    outputResolution: "2K",
+    modelSpec: resolveAdobeImageModel("gpt-image-2").spec,
+  });
+  assert.equal((flexible.modelSpecificPayload as { size: string }).size, "2304x1728");
+});
+
+test("nano payload size is always a discovered enum value", async () => {
+  const { buildAdobeImagePayload, resolveAdobeImageModel } =
+    await import("../../open-sse/services/adobeFireflyClient.ts");
+  const { spec } = resolveAdobeImageModel("nano-banana-2");
+  const payload = buildAdobeImagePayload({
+    prompt: "x",
+    aspectRatio: "16:9",
+    outputResolution: "2K",
+    modelSpec: spec,
+  });
+  const size = payload.size as { width: number; height: number };
+  assert.ok(spec.capabilities.supportedSizes.includes(`${size.width}x${size.height}`));
+  assert.equal(payload.caiClaimVersion, 2);
+});
+
+test("live-discovered models become resolvable after registration", async () => {
+  const { registerAdobeFireflyDiscoveredModels, resolveAdobeImageModel } =
+    await import("../../open-sse/services/adobeFireflyModels.ts");
+  const base = resolveAdobeImageModel("gpt-image-2").spec;
+  assert.throws(() => resolveAdobeImageModel("gpt-image-gpt-image-2.5-prism-test"));
+  registerAdobeFireflyDiscoveredModels([
+    { ...base, id: "gpt-image-gpt-image-2.5-prism-test", upstreamModelVersion: "2.5-prism" },
+  ]);
+  const resolved = resolveAdobeImageModel("adobe-firefly/gpt-image-gpt-image-2.5-prism-test");
+  assert.equal(resolved.spec.upstreamModelVersion, "2.5-prism");
+  assert.equal(resolved.spec.family, "gpt-image");
+});
+
+test("Sherlock-minted ARP shape is distinguished from cookie rebuilds", async () => {
+  const { isSherlockMintedArp } =
+    await import("../../open-sse/services/adobeFireflyBrowserLogin.ts");
+  const minted = Buffer.from(
+    JSON.stringify({ sid: "s", ftr: "f", ark: "a", bfp: "b" }),
+    "utf8"
+  ).toString("base64");
+  const rebuilt = Buffer.from(
+    JSON.stringify({ sid: "s", ark: "a", ftr: "f", bfp: "b", fpjs: "{}" }),
+    "utf8"
+  ).toString("base64");
+  assert.equal(isSherlockMintedArp(minted.padEnd(48, "=")), true);
+  assert.equal(isSherlockMintedArp(rebuilt), false);
+});
+
+test("401 'Oauth token is not valid' trips the auth breaker: next request fails without submitting", async () => {
+  const { __resetAdobeFireflySessionCacheForTests, ensureAdobeFireflySession } =
+    await import("../../open-sse/services/adobeFireflySession.ts");
+  __resetAdobeFireflySessionCacheForTests();
+  let submits = 0;
+  const fetchImpl = async (url: string) => {
+    if (String(url).includes("generate-async")) {
+      submits += 1;
+      return jsonResponse(401, {
+        title: "ErrInvalidOauthToken",
+        error_code: 401013,
+        message: "Oauth token is not valid",
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const credentials = { apiKey: userImsJwt(), connectionId: "breaker-conn" };
+  const first = await handleAdobeFireflyImageGeneration({
+    model: "nano-banana-2",
+    provider: "adobe-firefly",
+    body: { prompt: "breaker" },
+    credentials,
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+  assert.equal(first.success, false);
+  assert.equal(first.status, 401);
+  assert.match(String(first.error), /Oauth token is not valid/);
+  const submitsAfterFirst = submits;
+  assert.ok(
+    submitsAfterFirst >= 1 && submitsAfterFirst <= 2,
+    "same token is never resubmitted in a loop"
+  );
+
+  const second = await handleAdobeFireflyImageGeneration({
+    model: "nano-banana-2",
+    provider: "adobe-firefly",
+    body: { prompt: "breaker 2" },
+    credentials,
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+  assert.equal(second.status, 401);
+  assert.equal(submits, submitsAfterFirst, "breaker must fail fast without another submit");
+  await assert.rejects(
+    ensureAdobeFireflySession({ credentials, allowBrowserRefresh: false }),
+    /rejected the sign-in token/
+  );
 });

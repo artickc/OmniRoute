@@ -1,6 +1,6 @@
 import { BaseExecutor, type ExecuteInput } from "./base.ts";
 import { solveDeepSeekPowAsync } from "../lib/deepseek-pow.ts";
-import { type OpenAIToolCall } from "../translator/webTools.ts";
+import { type OpenAIToolCall, isPromptToolEmulationEnabled } from "../translator/webTools.ts";
 import {
   serializeDeepSeekToolPrompt,
   parseDeepSeekToolCalls,
@@ -852,7 +852,8 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     // back into OpenAI tool_calls on the way out.
     const requestedTools = bodyObj.tools;
     const hasTools = Array.isArray(requestedTools) && requestedTools.length > 0;
-    const toolSystemPrompt = hasTools ? serializeDeepSeekToolPrompt(requestedTools) : "";
+    const toolSystemPrompt =
+      hasTools && isPromptToolEmulationEnabled() ? serializeDeepSeekToolPrompt(requestedTools) : "";
 
     const messages = (Array.isArray(bodyObj.messages) ? bodyObj.messages : []) as Array<{
       role: string;

@@ -127,6 +127,16 @@ export async function fetchAntigravityDiscoveryModelsCached(
       );
     }
 
+    const psdRecord = asRecord(providerSpecificData);
+    const projectId =
+      discovered ||
+      toNonEmptyString(psdRecord.projectId) ||
+      toNonEmptyString(psdRecord.cloudaicompanionProject) ||
+      undefined;
+    const requestBody = JSON.stringify(projectId ? { project: projectId } : {});
+
+    const byId = new Map<string, { id: string; name: string }>();
+
     for (const discoveryUrl of [
       ...getAntigravityFetchAvailableModelsUrls(),
       ...getAntigravityModelsDiscoveryUrls(),
@@ -138,7 +148,7 @@ export async function fetchAntigravityDiscoveryModelsCached(
           proxyConfig: proxy,
           method: "POST",
           headers: getAntigravityContentHeaders(profile, accessToken),
-          body: JSON.stringify({}),
+          body: requestBody,
         });
 
         if (!response.ok) {
@@ -154,7 +164,12 @@ export async function fetchAntigravityDiscoveryModelsCached(
           provider
         ).map((model) => mapAntigravityModelForClient(model, provider));
         if (models.length > 0) {
-          return models;
+          for (const model of models) {
+            if (!byId.has(model.id)) {
+              byId.set(model.id, model);
+            }
+          }
+          break;
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -162,7 +177,50 @@ export async function fetchAntigravityDiscoveryModelsCached(
       }
     }
 
-    return [];
+    // Also query :retrieveUserQuota so models entitled via quota buckets (e.g. gemini-3.6-flash-*,
+    // gemini-pro-agent, gemini-3.1-pro-low) are included in the account's discovered model list.
+    for (const quotaUrl of [
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    ]) {
+      try {
+        const response = await safeOutboundFetch(quotaUrl, {
+          ...SAFE_OUTBOUND_FETCH_PRESETS.modelsDiscovery,
+          guard: getProviderOutboundGuard(),
+          proxyConfig: proxy,
+          method: "POST",
+          headers: getAntigravityContentHeaders(profile, accessToken),
+          body: requestBody,
+        });
+        if (!response.ok) continue;
+        const quotaData = asRecord(await response.json());
+        const buckets = Array.isArray(quotaData.buckets) ? quotaData.buckets : [];
+        const quotaModels: AntigravityDiscoveryModel[] = [];
+        for (const rawBucket of buckets) {
+          const bucket = asRecord(rawBucket);
+          const modelId = toNonEmptyString(bucket.modelId);
+          if (modelId) {
+            quotaModels.push({ id: modelId, name: modelId });
+          }
+        }
+        const filteredQuotaModels = filterUserCallableAntigravityModels(
+          quotaModels,
+          provider
+        ).map((model) => mapAntigravityModelForClient(model, provider));
+        for (const model of filteredQuotaModels) {
+          if (!byId.has(model.id)) {
+            byId.set(model.id, model);
+          }
+        }
+        if (filteredQuotaModels.length > 0) {
+          break;
+        }
+      } catch {
+        // Ignore quota supplement errors
+      }
+    }
+
+    return [...byId.values()];
   })().finally(() => {
     antigravityDiscoveryInflight.delete(cacheKey);
   });

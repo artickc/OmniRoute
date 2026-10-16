@@ -5,6 +5,8 @@
  * when a request cannot perform authenticated discovery (for example /v1/models).
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ADOBE_FIREFLY_DISCOVERY_SNAPSHOT } from "./adobeFireflyModelSnapshot.ts";
 
 export type AdobeFireflyModality = "image" | "video" | "audio" | "unknown";
@@ -412,6 +414,82 @@ export const ADOBE_FIREFLY_VIDEO_MODELS: Record<string, AdobeFireflyVideoModelSp
     ])
   );
 
+// ── Live-discovered models ───────────────────────────────────────────────────
+// Provider model sync advertises the LIVE discovery catalog (e.g. 57 models) while the bundled
+// snapshot only knows 52, so newly released models (gpt-image-2.5-prism, flux2-klein, …) were
+// offered in the UI but rejected at generate time as "Unknown Adobe Firefly … model". Every
+// successful discovery is registered here (memory + DATA_DIR) and resolution consults it.
+
+const DISCOVERED_MODELS_FILE = "adobe-firefly-discovered-models.json";
+
+function discoveredModelsPath(): string | null {
+  try {
+    const dir = String(process.env.DATA_DIR || process.env.OMNIROUTE_DATA_DIR || "").trim() || "";
+    if (!dir) return null;
+    return join(dir, DISCOVERED_MODELS_FILE);
+  } catch {
+    return null;
+  }
+}
+
+function registerCatalogModel(model: AdobeFireflyCatalogModel, overwrite: boolean): boolean {
+  if (!model?.id || !model.capabilities) return false;
+  if (model.modality === "image") {
+    if (!overwrite && ADOBE_FIREFLY_IMAGE_MODELS[model.id]) return false;
+    ADOBE_FIREFLY_IMAGE_MODELS[model.id] = {
+      ...model,
+      modality: "image",
+      family: imageFamily(model),
+    };
+    return true;
+  }
+  if (model.modality === "video") {
+    if (!overwrite && ADOBE_FIREFLY_VIDEO_MODELS[model.id]) return false;
+    ADOBE_FIREFLY_VIDEO_MODELS[model.id] = {
+      ...model,
+      modality: "video",
+      defaultDuration: defaultDuration(model),
+      defaultResolution: defaultResolution(model),
+    };
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Register live-discovered models so generation can resolve them. Live capabilities are
+ * authoritative, so they also replace snapshot entries with the same id. Persisted best-effort.
+ */
+export function registerAdobeFireflyDiscoveredModels(models: AdobeFireflyCatalogModel[]): number {
+  let added = 0;
+  for (const model of models || []) {
+    if (registerCatalogModel(model, true)) added += 1;
+  }
+  const path = discoveredModelsPath();
+  if (path && added > 0 && process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify({ savedAt: Date.now(), models }, null, 0), "utf8");
+    } catch {
+      /* best-effort */
+    }
+  }
+  return added;
+}
+
+function loadPersistedDiscoveredModels(): void {
+  const path = discoveredModelsPath();
+  if (!path || !existsSync(path)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      models?: AdobeFireflyCatalogModel[];
+    };
+    for (const model of parsed.models || []) registerCatalogModel(model, true);
+  } catch {
+    /* ignore corrupt cache */
+  }
+}
+
 const LEGACY_MODEL_ALIASES: Record<string, string> = {
   "nano-banana": "gemini-flash-nano-banana",
   "nano-banana-pro": "gemini-flash-nano-banana-2",
@@ -440,6 +518,10 @@ for (const [alias, target] of Object.entries(LEGACY_MODEL_ALIASES)) {
   if (imageTarget) ADOBE_FIREFLY_IMAGE_MODELS[alias] = imageTarget;
   const videoTarget = ADOBE_FIREFLY_VIDEO_MODELS[target];
   if (videoTarget) ADOBE_FIREFLY_VIDEO_MODELS[alias] = videoTarget;
+}
+
+if (process.env.NODE_ENV !== "test" && !process.env.NODE_TEST_CONTEXT) {
+  loadPersistedDiscoveredModels();
 }
 
 /** Backward-compatible request ids. Kept out of every advertised model catalog. */

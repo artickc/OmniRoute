@@ -91,6 +91,9 @@ const PROVIDER_LIMITS_APIKEY_PROVIDERS = new Set([
   // Conol session cookie → GET /api/billing/balance (daily + extra credits)
   "conol-web",
   "cnl",
+  // SYNTX.ai Bearer JWT stored as apikey → Hours (6h) + Weekly (7d) + token wallet
+  "syntx",
+  "stx",
 ]);
 const DEFAULT_PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES = 70;
 const PROVIDER_LIMITS_AUTO_SYNC_SETTING_KEY = "provider_limits_auto_sync_last_run";

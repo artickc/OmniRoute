@@ -716,12 +716,15 @@ async function buildUnifiedModelsResponseCore(
         // static models.
         const syncedForProvider = syncedModelIdsByCanonicalProvider.get(canonicalProviderId);
         if (
-          shouldSuppressStaticModelBySyncedCoverage({
+          (canonicalProviderId === "antigravity" &&
+            syncedForProvider !== undefined &&
+            syncedForProvider.size > 0) ||
+          (shouldSuppressStaticModelBySyncedCoverage({
             providerHasSynced: syncedForProvider !== undefined && syncedForProvider.size > 0,
             staticModelId: model.id,
             syncedModelIds: syncedForProvider ? [...syncedForProvider] : [],
           }) &&
-          !isRegisteredEffortVariant(providerModels, model.id)
+            !isRegisteredEffortVariant(providerModels, model.id))
         )
           continue;
         if (!providerSupportsModel(canonicalProviderId, model.id)) continue;
@@ -1146,7 +1149,7 @@ async function buildUnifiedModelsResponseCore(
         owned_by: videoModel.provider,
         type: "video",
         supported_sizes: videoModel.supportedSizes,
-        input_modalities: ["text"],
+        input_modalities: videoModel.inputModalities || ["text"],
         output_modalities: ["video"],
         ...(videoModel.mediaCapabilities
           ? { media_capabilities: videoModel.mediaCapabilities }
@@ -1166,6 +1169,10 @@ async function buildUnifiedModelsResponseCore(
         created: timestamp,
         owned_by: musicModel.provider,
         type: "music",
+        output_modalities: ["music"],
+        ...(musicModel.mediaCapabilities
+          ? { media_capabilities: musicModel.mediaCapabilities }
+          : {}),
       });
     }
 

@@ -78,6 +78,20 @@ describe("webTools — prepareToolMessages", () => {
     assert.equal(result.effectiveMessages.length, messages.length + 1);
   });
 
+  test("does not prepend a tool catalog when OMNIROUTE_PROMPT_EMULATE_TOOLS is off", () => {
+    const prev = process.env.OMNIROUTE_PROMPT_EMULATE_TOOLS;
+    process.env.OMNIROUTE_PROMPT_EMULATE_TOOLS = "0";
+    try {
+      const messages = [{ role: "user", content: "weather in SP?" }];
+      const result = prepareToolMessages({ tools: WEATHER_TOOL }, messages);
+      assert.equal(result.hasTools, true);
+      assert.equal(result.effectiveMessages, messages);
+    } finally {
+      if (prev === undefined) delete process.env.OMNIROUTE_PROMPT_EMULATE_TOOLS;
+      else process.env.OMNIROUTE_PROMPT_EMULATE_TOOLS = prev;
+    }
+  });
+
   test("passes messages through untouched when there are no tools", () => {
     const messages = [{ role: "user", content: "hi" }];
     const result = prepareToolMessages({}, messages);

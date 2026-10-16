@@ -7,6 +7,11 @@
  * - /v1/audio/speech (TTS API)
  */
 
+import {
+  toRegistrySpeechModels as toSyntxSpeechModels,
+  toRegistryTranscriptionModels as toSyntxTranscriptionModels,
+} from "../services/syntxMediaCatalog.ts";
+
 interface AudioModel {
   id: string;
   name: string;
@@ -14,6 +19,7 @@ interface AudioModel {
 
 export interface AudioProvider {
   id: string;
+  alias?: string;
   baseUrl: string;
   authType: string;
   authHeader: string;
@@ -225,6 +231,16 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
     async: true,
     format: "speechmatics",
     models: [{ id: "enhanced", name: "Enhanced" }],
+  },
+
+  syntx: {
+    id: "syntx",
+    alias: "stx",
+    baseUrl: "https://api.syntx.ai/api/v1/audio/transcribe",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "syntx-audio",
+    models: toSyntxTranscriptionModels(),
   },
 };
 
@@ -540,6 +556,16 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
       { id: "mimo-v2.5-tts-voiceclone", name: "MiMo V2.5 Voice Clone" },
     ],
   },
+
+  syntx: {
+    id: "syntx",
+    alias: "stx",
+    baseUrl: "https://api.syntx.ai/api/v1/audio/generate",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "syntx-audio",
+    models: toSyntxSpeechModels(),
+  },
 };
 
 /**
@@ -596,10 +622,13 @@ function parseAudioModel(
 ): { provider: string | null; model: string | null } {
   if (!modelStr) return { provider: null, model: null };
 
-  // Phase 1: prefix match in hardcoded registry
-  for (const [providerId] of Object.entries(registry)) {
+  // Phase 1: prefix match in hardcoded registry (id or alias)
+  for (const [providerId, config] of Object.entries(registry)) {
     if (modelStr.startsWith(providerId + "/")) {
       return { provider: providerId, model: modelStr.slice(providerId.length + 1) };
+    }
+    if (config.alias && modelStr.startsWith(config.alias + "/")) {
+      return { provider: providerId, model: modelStr.slice(config.alias.length + 1) };
     }
   }
 

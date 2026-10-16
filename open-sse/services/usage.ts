@@ -68,6 +68,7 @@ import { getXaiUsage } from "./usage/xai.ts";
 import { getXaiOauthUsage } from "./usage/xaiOauth.ts";
 import { getFirecrawlUsage } from "./usage/firecrawl.ts";
 import { getConolUsage } from "./usage/conol.ts";
+import { getSyntxUsage } from "./usage/syntx.ts";
 
 type JsonRecord = Record<string, unknown>;
 type UsageProviderConnection = JsonRecord & {
@@ -132,6 +133,9 @@ export const USAGE_FETCHER_PROVIDERS = [
   // Conol session cookie → GET /api/billing/balance (daily + extra credits)
   "conol-web",
   "cnl",
+  // SYNTX.ai JWT → subscription tokens + 6h/7d windows
+  "syntx",
+  "stx",
 ] as const;
 
 export type UsageFetcherProvider = (typeof USAGE_FETCHER_PROVIDERS)[number];
@@ -232,6 +236,9 @@ export async function getUsageForProvider(
     case "conol-web":
     case "cnl":
       return await getConolUsage(apiKey || accessToken, providerSpecificData);
+    case "syntx":
+    case "stx":
+      return await getSyntxUsage(apiKey, accessToken, providerSpecificData);
     default:
       return { message: `Usage API not implemented for ${provider}` };
   }

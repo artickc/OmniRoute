@@ -5,16 +5,19 @@
  * Currently supports local providers (ComfyUI with audio models).
  */
 
-import { parseModelFromRegistry, getAllModelsFromRegistry } from "./registryUtils.ts";
+import { parseModelFromRegistry } from "./registryUtils.ts";
+import { toRegistryMusicModels } from "../services/syntxMediaCatalog.ts";
 
 interface MusicModel {
   id: string;
   name: string;
   isMarket?: boolean;
+  mediaCapabilities?: Record<string, unknown>;
 }
 
 interface MusicProvider {
   id: string;
+  alias?: string;
   baseUrl: string;
   statusUrl?: string;
   authType: string;
@@ -91,6 +94,16 @@ export const MUSIC_PROVIDERS: Record<string, MusicProvider> = {
       { id: "musicgen-medium", name: "MusicGen Medium" },
     ],
   },
+
+  syntx: {
+    id: "syntx",
+    alias: "stx",
+    baseUrl: "https://api.syntx.ai/api/v1/audio/generate",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "syntx-music",
+    models: toRegistryMusicModels(),
+  },
 };
 
 /**
@@ -111,5 +124,16 @@ export function parseMusicModel(modelStr: string | null) {
  * Get all music models as a flat list
  */
 export function getAllMusicModels() {
-  return getAllModelsFromRegistry(MUSIC_PROVIDERS);
+  return Object.entries(MUSIC_PROVIDERS).flatMap(([providerId, config]) =>
+    [providerId, config.alias]
+      .filter((prefix): prefix is string => Boolean(prefix))
+      .flatMap((prefix) =>
+        config.models.map((model) => ({
+          id: `${prefix}/${model.id}`,
+          name: model.name,
+          provider: providerId,
+          mediaCapabilities: model.mediaCapabilities,
+        }))
+      )
+  );
 }

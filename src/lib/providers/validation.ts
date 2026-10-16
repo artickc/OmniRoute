@@ -48,6 +48,8 @@ import {
   validateDevinCloudAgentProvider,
   validateInnerAiProvider,
   validateNotionWebProvider,
+  validateSyntxProvider,
+  validateAdobeFireflyProvider,
 } from "./validation/webProvidersB";
 import {
   validateHerokuProvider,
@@ -242,6 +244,10 @@ export async function validateProviderApiKey({ provider, apiKey, providerSpecifi
     "claude-web": validateClaudeWebProvider,
     "gemini-web": validateGeminiWebProvider,
     "notion-web": validateNotionWebProvider,
+    syntx: validateSyntxProvider,
+    stx: validateSyntxProvider,
+    "adobe-firefly": validateAdobeFireflyProvider,
+    firefly: validateAdobeFireflyProvider,
     "copilot-m365-web": validateCopilotM365WebProvider,
     "copilot-web": validateCopilotWebProvider,
     "t3-web": validateT3WebProvider,

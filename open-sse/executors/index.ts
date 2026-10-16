@@ -69,6 +69,8 @@ import { HyperAgentExecutor } from "./hyperagent.ts";
 import { XaiExecutor } from "./xai.ts";
 import { PromptQlExecutor } from "./promptql.ts";
 import { ConolWebExecutor } from "./conol-web.ts";
+import { TwinmindExecutor } from "./twinmind.ts";
+import { SyntxExecutor } from "./syntx.ts";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -197,6 +199,10 @@ const executors = {
   xao: new XaiExecutor("xai-oauth"),
   "conol-web": new ConolWebExecutor(),
   cnl: new ConolWebExecutor(), // Alias
+  twinmind: new TwinmindExecutor(),
+  tm: new TwinmindExecutor(), // Alias
+  syntx: new SyntxExecutor(),
+  stx: new SyntxExecutor(), // Alias
 };
 
 const defaultCache = new Map();
@@ -291,3 +297,5 @@ export { MoonshotExecutor } from "./moonshot.ts";
 export { CheaperInferenceExecutor } from "./cheaperinference.ts";
 export { PromptQlExecutor } from "./promptql.ts";
 export { ConolWebExecutor } from "./conol-web.ts";
+export { TwinmindExecutor } from "./twinmind.ts";
+export { SyntxExecutor } from "./syntx.ts";

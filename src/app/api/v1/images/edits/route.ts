@@ -3,6 +3,7 @@ import {
   handleCodexImageEdit,
   handleImageEdit,
   handleOpenAIImageEdit,
+  handleSyntxImageGeneration,
 } from "@omniroute/open-sse/handlers/imageGeneration.ts";
 import { createInjectionGuard } from "@/middleware/promptInjectionGuard";
 import {
@@ -301,6 +302,84 @@ async function handleAdobeFireflyEditRequest(params: {
   );
 }
 
+async function handleSyntxEditRequest(params: {
+  parsed: ReturnType<typeof parseImageModel>;
+  providerConfig: NonNullable<ReturnType<typeof getImageProvider>>;
+  allowedConnections: string[] | null;
+  resolvedModel: string;
+  prompt: string;
+  size: string | null;
+  responseFormat: string | null;
+  images: Array<{ bytes: Buffer; mime: string }>;
+  imageBytes: Buffer | null;
+  imageMime: string | null;
+}): Promise<Response> {
+  const {
+    parsed,
+    providerConfig,
+    allowedConnections,
+    resolvedModel,
+    prompt,
+    size,
+    responseFormat,
+    images,
+    imageBytes,
+    imageMime,
+  } = params;
+
+  const credentials = await getProviderCredentialsWithQuotaPreflight(
+    parsed.provider,
+    null,
+    allowedConnections,
+    resolvedModel
+  );
+  if (!credentials) {
+    return errorResponse(
+      HTTP_STATUS.UNAUTHORIZED,
+      `No credentials for provider: ${parsed.provider}`
+    );
+  }
+  if (credentials.allRateLimited) {
+    return unavailableResponse(
+      HTTP_STATUS.RATE_LIMITED,
+      `[${parsed.provider}] All accounts rate limited`,
+      credentials.retryAfter,
+      credentials.retryAfterHuman
+    );
+  }
+
+  const dataUrls = buildAdobeFireflyEditDataUrls(images, imageBytes, imageMime);
+  if (dataUrls.length === 0) {
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
+  }
+
+  const result = await handleSyntxImageGeneration({
+    provider: parsed.provider,
+    model: parsed.model,
+    providerConfig,
+    body: {
+      prompt,
+      size: size ?? undefined,
+      response_format: responseFormat ?? undefined,
+      n: 1,
+      image_url: dataUrls,
+      image: dataUrls.length === 1 ? dataUrls[0] : dataUrls,
+      image_urls: dataUrls,
+    },
+    credentials,
+    log,
+  });
+
+  if ((result as { success?: boolean }).success) {
+    await clearRecoveredProviderState(credentials);
+    return jsonResponse((result as { data?: unknown }).data);
+  }
+  return jsonResponse(
+    toJsonErrorPayload((result as { error?: unknown }).error, "Image edit provider error"),
+    (result as { status?: number }).status ?? HTTP_STATUS.BAD_GATEWAY
+  );
+}
+
 async function postHandler(request: Request, _context?: unknown) {
   let input: EditInput | null;
   try {
@@ -380,7 +459,9 @@ async function postHandler(request: Request, _context?: unknown) {
       ? fireflyCapabilityLimit
       : providerConfig?.format === "codex-responses"
         ? Number.POSITIVE_INFINITY
-        : MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
+        : providerConfig?.format === "syntx-image"
+          ? 10
+          : MAX_NON_CODEX_IMAGE_EDIT_REFERENCES;
   if (providerConfig?.format !== "codex-responses" && imageInputCount > maxRefsForProvider) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
@@ -545,12 +626,27 @@ async function postHandler(request: Request, _context?: unknown) {
     });
   }
 
+  if (providerConfig?.format === "syntx-image") {
+    return handleSyntxEditRequest({
+      parsed,
+      providerConfig,
+      allowedConnections,
+      resolvedModel,
+      prompt,
+      size,
+      responseFormat,
+      images,
+      imageBytes,
+      imageMime,
+    });
+  }
+
   // Other built-in providers do not expose an OpenAI-compatible edit endpoint.
   if (providerConfig) {
     return errorResponse(
       HTTP_STATUS.BAD_REQUEST,
       `Image edit is not supported for built-in provider "${parsed.provider}". ` +
-        `Use adobe-firefly, chatgpt-web, codex, or a custom OpenAI-compatible image provider.`
+        `Use adobe-firefly, syntx, chatgpt-web, codex, or a custom OpenAI-compatible image provider.`
     );
   }
 

@@ -5,10 +5,12 @@ import {
 import {
   getAdobeFireflyFallbackCatalog,
   mapDiscoveredToCatalog,
+  registerAdobeFireflyDiscoveredModels,
   toAdobeMediaCapabilitiesApi,
   type AdobeFireflyCatalogModel,
 } from "@omniroute/open-sse/services/adobeFireflyModels.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
+import { ensureAdobeFireflySession } from "@omniroute/open-sse/services/adobeFireflySession.ts";
 
 type AdobeProviderData = { cookie?: unknown; access_token?: unknown; accessToken?: unknown };
 
@@ -51,15 +53,23 @@ export async function getAdobeModels(
   const providerSpecificData =
     providerData && typeof providerData === "object" ? (providerData as AdobeProviderData) : {};
   try {
-    const token = await resolveAdobeAccessToken(
-      {
-        apiKey,
-        accessToken,
-        providerSpecificData,
-      },
-      fetchImpl
-    );
+    const credentials = { apiKey, accessToken, providerSpecificData };
+    // Prefer the session manager: it reuses a browser-renewed JWT from the durable session
+    // cache (the pasted one may be hours old). No Chrome launch from a model sync.
+    let token = "";
+    try {
+      const session = await ensureAdobeFireflySession({
+        credentials: credentials as Parameters<typeof ensureAdobeFireflySession>[0]["credentials"],
+        allowBrowserRefresh: false,
+        fetchImpl,
+      });
+      token = session.accessToken;
+    } catch {
+      token = await resolveAdobeAccessToken(credentials, fetchImpl);
+    }
     const models = mapDiscoveredToCatalog(await discoverAdobeFireflyModels(token, fetchImpl));
+    // Make every advertised model resolvable at generate time.
+    registerAdobeFireflyDiscoveredModels(models);
     return models.length > 0
       ? { models: models.map(toModelResponse), source: "api" }
       : fallback("Adobe Firefly discovery returned no callable image or video models");

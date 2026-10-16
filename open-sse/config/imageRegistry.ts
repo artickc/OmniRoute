@@ -16,6 +16,7 @@ import {
   ADOBE_FIREFLY_IMAGE_ROUTING_ALIASES,
   toRegistryImageModels,
 } from "../services/adobeFireflyModels.ts";
+import { toRegistryImageModels as toSyntxImageModels } from "../services/syntxMediaCatalog.ts";
 
 interface ImageModelEntry {
   id: string;
@@ -809,6 +810,21 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     // 1K/2K are shared by the whole catalog. Wan 2.7 Image Pro callers can
     // still pass supported 4K dimensions through the permissive request schema.
     supportedSizes: ["1024x1024", "2048x2048"],
+  },
+
+  // SYNTX.ai (unofficial) — Bearer JWT. Image generate via /api/v1/design/generate
+  // then poll the chat for completed image objects. Chat stays on SyntxExecutor.
+  syntx: {
+    id: "syntx",
+    alias: "stx",
+    baseUrl: "https://api.syntx.ai/api/v1/design/generate",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "syntx-image",
+    models: toSyntxImageModels(),
+    // Per-model sizes live on mediaCapabilities. A provider-wide pixel list
+    // would stamp 1024x1024 onto Midjourney/Flux/Seedream aspect-ratio models.
+    supportedSizes: [],
   },
 };
 

@@ -7,11 +7,10 @@
  * Browser warm is OPT-IN for proactive use (`ADOBE_FIREFLY_BROWSER_REFRESH=1`) and may
  * also run mid-batch 408 recovery via `allowWithoutEnvOptIn`.
  *
- * **Mode (critical for colligo):** Forter risk scores reject Chrome `--headless=new`.
- * Live verification: headless warm → still 408; off-screen **headed** Chrome → 200.
- * Default is therefore **off-screen headed** (window parked at -32000,-32000 — not visible
- * on a normal desktop). Opt into true headless only with `ADOBE_FIREFLY_CHROME_HEADLESS=1`
- * (known-broken for generate). Debug on-screen: `ADOBE_FIREFLY_CHROME_VISIBLE=1`.
+ * **Mode (UI + colligo):** background warm defaults to **offscreen headed** (parked off
+ * display + minimized) so Forter tokens work. True `--headless=new` is opt-in only
+ * (`ADOBE_FIREFLY_CHROME_HEADLESS=1`) and typically yields generate HTTP 408 while a real
+ * browser still works. Interactive sign-in uses modeOverride=visible.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -54,17 +53,17 @@ let startingChrome: Promise<RuntimeState> | null = null;
 /** Temporary mode override (e.g. force a visible window for interactive sign-in). */
 let modeOverride: "offscreen" | "visible" | "headless" | null = null;
 
-/** Prefer off-screen headed (Forter works). Headless is opt-in and usually rejected. */
+/**
+ * Background cookie/JWT work should not flash a normal desktop window.
+ * - default / HEADED / OFFSCREEN → offscreen headed (Forter-safe; colligo accepts)
+ * - HEADLESS=1 → true headless (often 408 on generate — debug only)
+ * - VISIBLE=1 → on-screen (debug only; interactive sign-in uses modeOverride)
+ */
 function resolveChromeMode(): "offscreen" | "visible" | "headless" {
   if (modeOverride) return modeOverride;
+  if (process.env.ADOBE_FIREFLY_CHROME_VISIBLE === "1") return "visible";
+  // True headless is opt-in only — colligo rejects its Forter tokens (API 408, browser OK).
   if (process.env.ADOBE_FIREFLY_CHROME_HEADLESS === "1") return "headless";
-  // Legacy alias: ADOBE_FIREFLY_CHROME_HEADED=1 meant "show window"
-  if (
-    process.env.ADOBE_FIREFLY_CHROME_VISIBLE === "1" ||
-    process.env.ADOBE_FIREFLY_CHROME_HEADED === "1"
-  ) {
-    return "visible";
-  }
   return "offscreen";
 }
 
@@ -226,18 +225,25 @@ async function tryConnectExistingCdp(
     const r = await fetch(`http://127.0.0.1:${port}/json/version`);
     if (!r.ok) return null;
 
-    // Never reuse a headless Chrome for recovery — colligo rejects its Forter tokens.
-    // Desired "headless" may reuse headless; offscreen/visible must get a headed process.
-    if (desiredMode !== "headless") {
-      const headless = await isPortChromeHeadless(port);
-      if (headless === true) {
-        log?.warn?.(
-          "ADOBE-FIREFLY",
-          `existing CDP on ${port} is headless — killing and restarting as ${desiredMode}`
-        );
-        await killPortOwner(port);
-        return null;
-      }
+    // Match process headless-ness to desiredMode:
+    // - headless desired: never reuse a headed process (would flash a real window).
+    // - offscreen/visible desired: never reuse headless (wrong Forter/profile mode).
+    const headless = await isPortChromeHeadless(port);
+    if (desiredMode === "headless" && headless === false) {
+      log?.warn?.(
+        "ADOBE-FIREFLY",
+        `existing CDP on ${port} is headed — killing and restarting as headless (no UI)`
+      );
+      await killPortOwner(port);
+      return null;
+    }
+    if (desiredMode !== "headless" && headless === true) {
+      log?.warn?.(
+        "ADOBE-FIREFLY",
+        `existing CDP on ${port} is headless — killing and restarting as ${desiredMode}`
+      );
+      await killPortOwner(port);
+      return null;
     }
 
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
@@ -373,9 +379,13 @@ async function ensureChromeStarted(
   }
 
   if (runtime?.browser && runtime.context) {
-    // If cached runtime mode is headless but we need headed Forter, restart.
-    if (runtime.mode === "headless" && mode !== "headless") {
-      log?.warn?.("ADOBE-FIREFLY", "cached Chrome is headless — restarting headed for Forter");
+    // Mode mismatch: always restart so we never keep a headed UI when silent headless
+    // is required, and never keep headless when offscreen/visible is required.
+    if (runtime.mode !== mode) {
+      log?.warn?.(
+        "ADOBE-FIREFLY",
+        `cached Chrome mode=${runtime.mode} desired=${mode} — restarting`
+      );
       try {
         await runtime.browser?.close();
       } catch {
@@ -386,22 +396,22 @@ async function ensureChromeStarted(
     } else {
       try {
         await fetch(`http://127.0.0.1:${runtime.port}/json/version`);
-        // Double-check process still headed when we need it
-        if (mode !== "headless") {
-          const hl = await isPortChromeHeadless(runtime.port);
-          if (hl === true) {
-            log?.warn?.("ADOBE-FIREFLY", "live CDP became headless — restarting");
-            try {
-              await runtime.browser?.close();
-            } catch {
-              /* ignore */
-            }
-            runtime = null;
-            await killPortOwner(DEFAULT_CDP_PORT);
-          } else {
-            runtime.page = await ensureLivePage(runtime.context, runtime.page);
-            return runtime;
+        // Live process must still match headless/headed expectation.
+        const hl = await isPortChromeHeadless(runtime.port);
+        const mismatch =
+          (mode === "headless" && hl === false) || (mode !== "headless" && hl === true);
+        if (mismatch) {
+          log?.warn?.(
+            "ADOBE-FIREFLY",
+            `live CDP headless=${hl} desired=${mode} — restarting`
+          );
+          try {
+            await runtime.browser?.close();
+          } catch {
+            /* ignore */
           }
+          runtime = null;
+          await killPortOwner(DEFAULT_CDP_PORT);
         } else {
           runtime.page = await ensureLivePage(runtime.context, runtime.page);
           return runtime;
@@ -437,8 +447,8 @@ async function ensureChromeStarted(
     const port = DEFAULT_CDP_PORT;
     const dir = profileDir();
 
-    // Prefer reusing a healthy headed CDP (do NOT kill mid-warm — was causing "page closed").
-    // Never reuse headless when desired mode is offscreen/visible.
+    // Prefer reusing a healthy CDP only when mode matches (headless vs headed).
+    // Mismatched reuse is rejected inside tryConnectExistingCdp.
     if (!opts?.forceRestart) {
       const existing = await tryConnectExistingCdp(chromium, port, dir, mode, log);
       if (existing) {
@@ -455,9 +465,11 @@ async function ensureChromeStarted(
       resetChromeWindowPlacementOnDisk(dir, log);
     }
 
-    // Off-screen headed is the default: Forter accepts real Chrome; headless=new is rejected.
+    // Default headless: zero UI for cookie/JWT warm. Offscreen/visible are opt-in only.
     const args = [
       `--remote-debugging-port=${port}`,
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-allow-origins=*",
       `--user-data-dir=${dir}`,
       "--no-first-run",
       "--no-default-browser-check",
@@ -485,12 +497,12 @@ async function ensureChromeStarted(
 
     log?.info?.(
       "ADOBE-FIREFLY",
-      `starting Chrome CDP profile=${dir} port=${port} mode=${mode} (offscreen=headed parked off-display; visible=on-screen sign-in)`
+      `starting Chrome CDP profile=${dir} port=${port} mode=${mode} (headless=silent; offscreen=headed parked; visible=on-screen sign-in)`
     );
     const chromeProc = spawn(chromePath, args, {
       stdio: "ignore",
       detached: true,
-      // Hide the spawn console only; Chrome UI must remain visible for sign-in.
+      // Only interactive sign-in may show a window host; silent refresh stays hidden.
       windowsHide: mode !== "visible",
     });
     chromeProc.unref();
@@ -692,7 +704,8 @@ export async function warmAdobeFireflyViaChrome(opts: {
   waitForLoginMs?: number;
   /**
    * Mid-batch 408 recovery: allow warm without ADOBE_FIREFLY_BROWSER_REFRESH=1.
-   * Uses off-screen headed Chrome by default (Forter-safe; no normal-desktop window).
+   * Uses headless Chrome by default (no UI). Opt into headed offscreen with
+   * ADOBE_FIREFLY_CHROME_HEADED=1 if diagnosing colligo.
    */
   allowWithoutEnvOptIn?: boolean;
   /** When true (or ADOBE_FIREFLY_CHROME_PING=1), prove ARP with in-page generate-async. */
@@ -712,7 +725,8 @@ export async function warmAdobeFireflyViaChrome(opts: {
     if (!cookieIn?.trim() && !opts.accessToken) return null;
 
     const forterBefore = extractAdobeForterTimestampMs(cookieIn);
-    // Recovery path always prefers a fresh headed Chrome (stale headless CDP is poison).
+    // Force restart on recovery so we never reuse a half-dead CDP; mode is still headless
+    // by default (no popup). ADOBE_FIREFLY_CHROME_HEADED=1 opts into offscreen headed.
     const rt = await ensureChromeStarted(log, {
       forceRestart: Boolean(opts.allowWithoutEnvOptIn) || process.env.ADOBE_FIREFLY_CHROME_FORCE_RESTART === "1",
     });
@@ -1030,7 +1044,7 @@ export async function loginAdobeFireflyViaChrome(opts: {
         : "sign-in timed out — no AdobeID session"
     );
 
-    // Close the visible window; the persistent profile keeps the SSO for off-screen warms.
+    // Close the visible window; the persistent profile keeps the SSO for later headless warms.
     try {
       await rt.browser?.close();
     } catch {

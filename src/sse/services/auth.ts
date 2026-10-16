@@ -950,6 +950,11 @@ export { fisherYatesShuffle, getNextFromDeckSync as getNextFromDeck };
 const PROVIDER_SEARCH_PAIRS: string[][] = [
   ["nvidia", "nvidia_nim"],
   ["kimi-coding", "kimi-coding-apikey"],
+  // The model layer canonicalizes `agy/` to `antigravity`, but legacy/CLI cards
+  // can store connections under `agy`. Same account family, either id serves.
+  ["antigravity", "agy"],
+  ["opencode", "opencode-zen"],
+  ["jina-ai", "jina-reader", "jina-search"],
 ];
 /**
  * Resolve provider aliases (e.g., nvidia -> nvidia_nim) for DB lookup
@@ -959,7 +964,7 @@ async function getProviderSearchPool(provider: string): Promise<string[]> {
   const canonicalAlias = getProviderAlias(canonicalProvider);
 
   const pair = PROVIDER_SEARCH_PAIRS.find((aliases) => aliases.includes(provider));
-  if (pair) return pair[0] === provider ? pair : [pair[1], pair[0]];
+  if (pair) return [provider, ...pair.filter((id) => id !== provider)];
 
   const searchPool = new Set([provider, canonicalProvider, canonicalAlias].filter(Boolean));
 

@@ -45,6 +45,18 @@ function toRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * VibeProxy owns Agentic Conversion (tools[] → prompt). OmniRoute's web-cookie
+ * catalog inject is a duplicate of that. Unset = on (OmniRoute dashboard /
+ * unit tests). VibeProxy always sets OMNIROUTE_PROMPT_EMULATE_TOOLS=0 unless
+ * the Jailbreak "backend tool prompt" toggle is on.
+ */
+export function isPromptToolEmulationEnabled(): boolean {
+  const raw = (process.env.OMNIROUTE_PROMPT_EMULATE_TOOLS ?? "").trim().toLowerCase();
+  if (!raw) return true;
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
 export function getRequestedToolNames(tools: unknown): RequestedToolName[] {
   if (!Array.isArray(tools)) return [];
   const names: RequestedToolName[] = [];
@@ -492,6 +504,9 @@ export function prepareToolMessages(
   const requestedTools = bodyObj.tools;
   const hasTools = Array.isArray(requestedTools) && requestedTools.length > 0;
   if (!hasTools) return { hasTools: false, requestedTools, effectiveMessages: messages };
+  if (!isPromptToolEmulationEnabled()) {
+    return { hasTools: true, requestedTools, effectiveMessages: messages };
+  }
 
   const toolPrompt = serializeToolsToPrompt(requestedTools);
   return {

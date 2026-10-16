@@ -458,6 +458,9 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   // Conol session cookie → GET /api/billing/balance (daily + extra credits)
   "conol-web",
   "cnl",
+  // SYNTX.ai JWT (authType apikey) → /api/v1/user/subscription + /api/v1/llm/limits
+  "syntx",
+  "stx",
 ];
 
 // ── Zod validation at module load (Phase 7.2) ──

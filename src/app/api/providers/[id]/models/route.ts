@@ -49,6 +49,8 @@ import {
   discoverPromptQlModels,
   PROMPTQL_FALLBACK_MODELS,
 } from "@omniroute/open-sse/services/promptqlModels.ts";
+import { maybeHandleTwinmindModelDiscovery } from "./twinmindDiscovery";
+import { maybeHandleSyntxModelDiscovery } from "./syntxDiscovery";
 import {
   discoverNotionWebModels,
   NOTION_WEB_FALLBACK_MODELS,
@@ -604,6 +606,37 @@ export async function GET(
         });
       }
     }
+
+    const twinmindResponse = await maybeHandleTwinmindModelDiscovery({
+      provider,
+      connectionId,
+      apiKey,
+      accessToken,
+      refreshToken: (connection as { refreshToken?: unknown }).refreshToken,
+      providerSpecificData: connection.providerSpecificData,
+      proxy,
+      maybeReturnCachedDiscovery,
+      maybeReturnAutoFetchDisabled,
+      buildDiscoveryFallbackResponse,
+      buildResponse,
+      buildApiDiscoveryResponse,
+    });
+    if (twinmindResponse) return twinmindResponse;
+
+    const syntxResponse = await maybeHandleSyntxModelDiscovery({
+      provider,
+      connectionId,
+      apiKey,
+      accessToken,
+      providerSpecificData: connection.providerSpecificData,
+      proxy,
+      maybeReturnCachedDiscovery,
+      maybeReturnAutoFetchDisabled,
+      buildDiscoveryFallbackResponse,
+      buildResponse,
+      buildApiDiscoveryResponse,
+    });
+    if (syntxResponse) return syntxResponse;
 
     // #7600 follow-up: notion-web live catalog via cookie-auth getAvailableModels.
     // Needs spaceId (from cookie or getSpaces); falls back to seeded local catalog.

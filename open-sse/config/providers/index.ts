@@ -222,6 +222,8 @@ import { hcnsecProvider } from "./registry/hcnsec/index.ts";
 import { promptqlProvider } from "./registry/promptql/index.ts";
 import { hyperagentProvider } from "./registry/hyperagent/index.ts";
 import { conolWebProvider } from "./registry/conol-web/index.ts";
+import { twinmindProvider } from "./registry/twinmind/index.ts";
+import { syntxProvider } from "./registry/syntx/index.ts";
 
 export const REGISTRY: Record<string, RegistryEntry> = {
   aimlapi: aimlapiProvider,
@@ -446,4 +448,6 @@ export const REGISTRY: Record<string, RegistryEntry> = {
   promptql: promptqlProvider,
   hyperagent: hyperagentProvider,
   "conol-web": conolWebProvider,
+  twinmind: twinmindProvider,
+  syntx: syntxProvider,
 };

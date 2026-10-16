@@ -18,6 +18,8 @@ export type StreamReadinessPolicyResult = {
 };
 
 const DEFAULT_MAX_TIMEOUT_MS = 180_000;
+/** SYNTX generate/SSE often sits silent for minutes (native search/code/shell). */
+const SYNTX_READINESS_TIMEOUT_MS = 600_000;
 const LARGE_ITEM_THRESHOLD = 150;
 const VERY_LARGE_ITEM_THRESHOLD = 400;
 const TOOL_HEAVY_THRESHOLD = 15;
@@ -62,6 +64,11 @@ function isClaudeFormatReasoningProvider(provider?: string | null): boolean {
   return entry?.format === "claude";
 }
 
+function isSyntxProvider(provider?: string | null): boolean {
+  const normalized = (provider || "").toLowerCase();
+  return normalized === "syntx" || normalized === "stx";
+}
+
 function isCodexGpt5x(provider?: string | null, model?: string | null): boolean {
   const normalizedProvider = (provider || "").toLowerCase();
   const normalizedModel = (model || "").toLowerCase();
@@ -103,7 +110,7 @@ export function resolveStreamReadinessTimeout(
     return { timeoutMs: baseTimeoutMs, baseTimeoutMs, reasons: ["disabled"] };
   }
 
-  const maxTimeoutMs = Math.max(baseTimeoutMs, input.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS);
+  let maxTimeoutMs = Math.max(baseTimeoutMs, input.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS);
   const reasons: string[] = [];
   let timeoutMs = baseTimeoutMs;
 
@@ -160,6 +167,12 @@ export function resolveStreamReadinessTimeout(
   if (isClaudeFormatReasoningProvider(input.provider) && !codexHighReasoning) {
     timeoutMs += 30_000;
     reasons.push("claude_format_heavy_reasoning");
+  }
+
+  if (isSyntxProvider(input.provider)) {
+    timeoutMs = Math.max(timeoutMs, SYNTX_READINESS_TIMEOUT_MS);
+    maxTimeoutMs = Math.max(maxTimeoutMs, SYNTX_READINESS_TIMEOUT_MS);
+    reasons.push("syntx_slow_generate");
   }
 
   timeoutMs = Math.min(timeoutMs, maxTimeoutMs);

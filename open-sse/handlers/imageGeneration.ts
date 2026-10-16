@@ -75,14 +75,15 @@ import { handleSegmindImageGeneration } from "./imageGeneration/providers/segmin
 import { handleDesignerWebImageGeneration } from "./imageGeneration/providers/designerWeb.ts";
 import { handleMinimaxImageGeneration } from "./imageGeneration/providers/minimax.ts";
 import { handleAdobeFireflyImageGeneration } from "./imageGeneration/providers/adobeFirefly.ts";
+import { handleSyntxImageGeneration } from "./imageGeneration/providers/syntx.ts";
 import { handleAlibabaImageGeneration } from "./imageGeneration/providers/alibabaImage.ts";
 import {
   applyPollinationsAnonymousFallback,
   reportPollinationsAnonOutcome,
 } from "./imageGeneration/pollinationsAnonAuth.ts";
 
-// Re-export so /v1/images/edits can dispatch Firefly reference-image edits.
-export { handleAdobeFireflyImageGeneration };
+// Re-export so /v1/images/edits can dispatch Firefly / SYNTX reference-image edits.
+export { handleAdobeFireflyImageGeneration, handleSyntxImageGeneration };
 
 interface KieImageOptions {
   model: string;
@@ -512,6 +513,17 @@ export async function handleImageGeneration({
 
   if (providerConfig.format === "adobe-firefly-image") {
     return handleAdobeFireflyImageGeneration({
+      model,
+      provider,
+      providerConfig,
+      body,
+      credentials,
+      log,
+    });
+  }
+
+  if (providerConfig.format === "syntx-image") {
+    return handleSyntxImageGeneration({
       model,
       provider,
       providerConfig,

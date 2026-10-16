@@ -12,8 +12,92 @@
 // they are not chat-callable.
 
 export const AGY_PUBLIC_MODELS = Object.freeze([
+  // Gemini 4 Argon tiers returned by the live model selector for Antigravity CLI 1.3.4+.
+  {
+    id: "gemini-4-argon-high",
+    name: "Gemini 4 Argon (High)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-4-argon-medium",
+    name: "Gemini 4 Argon (Medium)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-4-argon-low",
+    name: "Gemini 4 Argon (Low)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  // Gemini 3.8 Flash tiers returned by the live model selector for Antigravity CLI 1.3.4+.
+  {
+    id: "gemini-3.8-flash-high",
+    name: "Gemini 3.8 Flash (High)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-3.8-flash-medium",
+    name: "Gemini 3.8 Flash (Medium)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-3.8-flash-low",
+    name: "Gemini 3.8 Flash (Low)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  // Gemini 3.7 Flash tiers.
+  {
+    id: "gemini-3.7-flash-high",
+    name: "Gemini 3.7 Flash (High)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-3.7-flash-medium",
+    name: "Gemini 3.7 Flash (Medium)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "gemini-3.7-flash-low",
+    name: "Gemini 3.7 Flash (Low)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
   // Gemini 3.6 Flash tiers. The live endpoint selects High by default and advertises
-  // all three ids to both the IDE 2.1.1 and CLI 1.1.x clients.
+  // all three ids to both the IDE 2.1.1 and CLI 1.1.x+ clients.
   {
     id: "gemini-3.6-flash-high",
     name: "Gemini 3.6 Flash (High)",
@@ -41,7 +125,61 @@ export const AGY_PUBLIC_MODELS = Object.freeze([
     supportsVision: true,
     toolCalling: true,
   },
-  // Claude (Antigravity backend).
+  // Claude 5.5 & 4.6 (Antigravity backend).
+  {
+    id: "claude-opus-5-5-high",
+    name: "Claude Opus 5.5 (High)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "claude-opus-5-5-medium",
+    name: "Claude Opus 5.5 (Medium)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "claude-opus-5-5-low",
+    name: "Claude Opus 5.5 (Low)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "claude-sonnet-5-5-high",
+    name: "Claude Sonnet 5.5 (High)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "claude-sonnet-5-5-medium",
+    name: "Claude Sonnet 5.5 (Medium)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
+  {
+    id: "claude-sonnet-5-5-low",
+    name: "Claude Sonnet 5.5 (Low)",
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
+    supportsReasoning: true,
+    supportsVision: true,
+    toolCalling: true,
+  },
   {
     id: "claude-opus-4-6-thinking",
     name: "Claude Opus 4.6 (Thinking)",
@@ -162,9 +300,21 @@ export function getClientVisibleAgyModelName(modelId: string, fallbackName?: str
 }
 
 export function isUserCallableAgyModelId(modelId: string): boolean {
-  return !!modelId && AGY_PUBLIC_MODEL_IDS.has(modelId);
+  return (
+    !!modelId &&
+    !modelId.startsWith("chat_") &&
+    !modelId.startsWith("tab_") &&
+    !modelId.endsWith("_weekly") &&
+    !AGY_NON_CHAT_MODEL_IDS.has(modelId)
+  );
 }
 
 export function isDiscoverableAgyModelId(modelId: string): boolean {
-  return !!modelId && !AGY_NON_CHAT_MODEL_IDS.has(modelId);
+  return (
+    !!modelId &&
+    !modelId.startsWith("chat_") &&
+    !modelId.startsWith("tab_") &&
+    !modelId.endsWith("_weekly") &&
+    !AGY_NON_CHAT_MODEL_IDS.has(modelId)
+  );
 }

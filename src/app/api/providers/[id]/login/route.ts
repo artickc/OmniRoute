@@ -20,7 +20,151 @@ function resolveProviderSlug(connection: Record<string, unknown> | null): string
   return "";
 }
 
-// тФАтФАтФА POST: Start login flow тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФА
+function isAdobeFireflyProvider(
+  connection: { provider?: unknown } | null,
+  providerSlug: string
+): boolean {
+  const raw = String(connection?.provider || "").trim();
+  return ADOBE_FIREFLY_SLUGS.has(raw) || ADOBE_FIREFLY_SLUGS.has(providerSlug);
+}
+
+/**
+ * Persist JWT + Cookie the way desktop clients (and generate) expect:
+ * multi-line api_key, plus camelCase providerSpecificData for updateProviderConnection.
+ */
+async function persistAdobeFireflyCredentials(
+  connectionId: string,
+  opts: {
+    accessToken?: string;
+    cookie?: string;
+    account?: string;
+    arpSessionId?: string;
+  }
+): Promise<{
+  accessToken: string;
+  cookie: string;
+  credential: string;
+  account: string;
+}> {
+  const accessToken = String(opts.accessToken || "").trim();
+  const cookie = String(opts.cookie || "").trim();
+  const account = String(opts.account || "").trim();
+  const credential =
+    accessToken && cookie
+      ? `${accessToken}\n${cookie}`
+      : accessToken ||
+        cookie ||
+        JSON.stringify({
+          mode: "browser-profile",
+          account,
+          signedInAt: Date.now(),
+        });
+
+  const marker = {
+    mode: "browser-profile",
+    account,
+    signedInAt: Date.now(),
+    arpSessionId: String(opts.arpSessionId || ""),
+  };
+
+  try {
+    // camelCase only — updateProviderConnection / encryptConnectionFields read apiKey +
+    // providerSpecificData (snake_case keys are silently ignored and never persisted).
+    await updateProviderConnection(connectionId, {
+      apiKey: credential,
+      providerSpecificData: {
+        ...marker,
+        cookie: cookie || credential,
+        access_token: accessToken || undefined,
+        browserSessionKey: connectionId,
+      },
+    });
+  } catch {
+    /* non-fatal — return credentials to the host app either way */
+  }
+
+  return { accessToken, cookie, credential, account };
+}
+
+function adobeFireflySuccessResponse(data: {
+  accessToken: string;
+  cookie: string;
+  credential: string;
+  account: string;
+  arpSessionId?: string;
+  via: "pure-cdp";
+}): NextResponse {
+  return NextResponse.json({
+    success: true,
+    account: data.account || undefined,
+    accessToken: data.accessToken || undefined,
+    cookie: data.cookie || undefined,
+    arpSessionId: data.arpSessionId || undefined,
+    credential: data.credential,
+    credentials: {
+      access_token: data.accessToken || undefined,
+      cookie: data.cookie || undefined,
+    },
+    via: data.via,
+    persisted: true,
+  });
+}
+
+/**
+ * Adobe Firefly browser sign-in:
+ * pure system Chrome/Edge CDP only (packaged-safe, no Playwright/browser bundle).
+ */
+async function loginAdobeFirefly(
+  connectionId: string,
+  body: { timeout?: unknown; freshSession?: unknown }
+): Promise<NextResponse> {
+  const timeout = typeof body.timeout === "number" ? body.timeout : undefined;
+  const freshSession = typeof body.freshSession === "boolean" ? body.freshSession : true;
+
+  // Pure system-browser CDP is the packaged-safe implementation. Do not open a second browser
+  // after failure: it creates ambiguous success/error races and the packaged runtime has no
+  // reliable Playwright browser bundle.
+  // startAdobeFireflyBrowserLogin always kills its Chrome tree in `finally` (no orphans).
+  try {
+    const { startAdobeFireflyBrowserLogin } =
+      await import("@omniroute/open-sse/services/adobeFireflyBrowserLogin.ts");
+    const pure = await startAdobeFireflyBrowserLogin(timeout, {
+      sessionKey: connectionId,
+      freshSession,
+    });
+    if (pure.success && pure.credentials?.accessToken) {
+      // Fresh sign-in: drop auth breaker / warm cooldowns / cached session for this account.
+      try {
+        const { resetAdobeFireflySessionState } =
+          await import("@omniroute/open-sse/services/adobeFireflySession.ts");
+        resetAdobeFireflySessionState(connectionId);
+      } catch {
+        /* non-fatal */
+      }
+      const persisted = await persistAdobeFireflyCredentials(connectionId, {
+        accessToken: pure.credentials.accessToken,
+        cookie: pure.credentials.cookie,
+        account: pure.account,
+      });
+      return adobeFireflySuccessResponse({
+        ...persisted,
+        via: "pure-cdp",
+      });
+    }
+    return NextResponse.json(
+      {
+        success: false,
+        error: pure.error || "Adobe Firefly sign-in did not capture an authenticated IMS JWT.",
+      },
+      { status: 400 }
+    );
+  } catch (err) {
+    const msg = sanitizeErrorMessage(err instanceof Error ? err.message : err);
+    return NextResponse.json({ success: false, error: msg }, { status: 400 });
+  }
+}
+
+// --- POST: Start login flow -------------------------------------------------
 
 export async function POST(
   req: NextRequest,
@@ -35,80 +179,16 @@ export async function POST(
     return NextResponse.json({ success: false, error: "Provider not found" }, { status: 404 });
   }
 
-  const body = await req.json().catch(() => ({}));
-  const timeout = typeof body.timeout === "number" ? body.timeout : undefined;
+  const body = (await req.json().catch(() => ({}))) as {
+    timeout?: unknown;
+    freshSession?: unknown;
+  };
   const providerSlug = resolveProviderSlug(provider as Record<string, unknown>);
 
-  // Adobe Firefly uses a persistent off-screen Chrome profile (Forter/Arkose need a real
-  // browser). Sign in once in a visible window; the profile then keeps the session fresh
-  // with no token/cookie to paste. This is NOT the generic cookie-scrape login path.
-  if (String(provider.provider || "") === "adobe-firefly") {
+  // Adobe Firefly: dedicated JWT capture (never cookies/localStorage alone).
+  if (isAdobeFireflyProvider(provider as { provider?: unknown }, providerSlug)) {
     try {
-      const { loginAdobeFireflyViaChrome } = await import(
-        "@omniroute/open-sse/services/adobeFireflyChromeRuntime.ts"
-      );
-      const cookieHint = typeof provider.api_key === "string" ? provider.api_key : undefined;
-      // Default freshSession=true so "Add Account" can sign into a different Adobe identity
-      // instead of silently reusing the previous SSO in the managed Chrome profile.
-      const freshSession =
-        typeof (body as { freshSession?: unknown }).freshSession === "boolean"
-          ? Boolean((body as { freshSession?: boolean }).freshSession)
-          : true;
-      const result = await loginAdobeFireflyViaChrome({
-        cookie: cookieHint,
-        waitForLoginMs: timeout,
-        freshSession,
-      });
-      if (result.success) {
-        // Persist JWT + Cookie (multi-line) so generate works immediately. sessionStorage JWT
-        // dies when Chrome closes; the cookie jar + IMS SSO in the profile cover refresh/warm.
-        const accessToken = String(result.accessToken || "").trim();
-        const cookie = String(result.cookie || "").trim();
-        const credential =
-          accessToken && cookie
-            ? `${accessToken}\n${cookie}`
-            : accessToken || cookie || JSON.stringify({
-                mode: "browser-profile",
-                account: result.account || "",
-                signedInAt: Date.now(),
-              });
-        const marker = {
-          mode: "browser-profile",
-          account: result.account || "",
-          signedInAt: Date.now(),
-          arpSessionId: result.arpSessionId || "",
-        };
-        try {
-          await updateProviderConnection(id, {
-            api_key: credential,
-            provider_specific_data: {
-              ...marker,
-              cookie: credential,
-              access_token: accessToken || undefined,
-            },
-          });
-        } catch {
-          /* non-fatal — return credentials to the host app either way */
-        }
-        return NextResponse.json({
-          success: true,
-          account: result.account,
-          accessToken: accessToken || undefined,
-          cookie: cookie || undefined,
-          arpSessionId: result.arpSessionId || undefined,
-          credential,
-          persisted: true,
-        });
-      }
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Sign-in did not complete. Open the browser window that appeared, log into your Adobe " +
-            "account, and keep it open until this finishes.",
-        },
-        { status: 400 }
-      );
+      return await loginAdobeFirefly(id, body);
     } catch (err) {
       const msg = sanitizeErrorMessage(err instanceof Error ? err.message : err);
       return NextResponse.json(
@@ -119,64 +199,15 @@ export async function POST(
   }
 
   try {
-    // Adobe Firefly is special: the IMS JWT is only ever in the Authorization
-    // header of firefly-3p.ff.adobe.io XHRs (never cookies/localStorage), so
-    // the generic cookie-extraction service cannot capture it. Use a dedicated
-    // Playwright service that intercepts that request instead.
-    if (ADOBE_FIREFLY_SLUGS.has(providerSlug)) {
-      const { startAdobeFireflyBrowserLogin } =
-        await import("@omniroute/open-sse/services/adobeFireflyBrowserLogin.ts");
-      const fireflyResult = await startAdobeFireflyBrowserLogin(timeout);
-
-      if (fireflyResult.success && fireflyResult.credentials) {
-        const credentials = fireflyResult.credentials;
-        try {
-          // Store the JWT in apiKey (where resolveAdobeAccessToken looks first)
-          // and the cookie + access_token in providerSpecificData (camelCase тАФ
-          // updateProviderConnection ignores snake_case keys).
-          const providerSpecificData: Record<string, string> = {};
-          if (credentials.accessToken) {
-            providerSpecificData.access_token = credentials.accessToken;
-          }
-          if (credentials.cookie) {
-            providerSpecificData.cookie = credentials.cookie;
-          }
-
-          await updateProviderConnection(id, {
-            apiKey: credentials.accessToken || "",
-            providerSpecificData,
-          });
-
-          return NextResponse.json({
-            success: true,
-            accessToken: credentials.accessToken || "",
-            cookie: credentials.cookie || "",
-            account: fireflyResult.account || "",
-            credentials: providerSpecificData,
-            persisted: true,
-          });
-        } catch (err) {
-          const msg = sanitizeErrorMessage(err instanceof Error ? err.message : err);
-          return NextResponse.json(
-            { success: false, error: `Extracted but failed to persist: ${msg}` },
-            { status: 500 }
-          );
-        }
-      }
-
-      return NextResponse.json(
-        { success: false, error: fireflyResult.error || "Adobe Firefly sign-in failed" },
-        { status: 400 }
-      );
-    }
-
     // Generic web-cookie path: pass the provider SLUG (not the DB id) so
     // TOKEN_EXTRACTION_CONFIGS can find the extraction config.
     // Bug: the previous code passed `id` (connection UUID), so the lookup always
     // missed and returned "No extraction config" without launching a browser.
     const { inAppLoginService } = await import("@omniroute/open-sse/services/inAppLoginService.ts");
 
-    const result = await inAppLoginService.startLogin(providerSlug || id, { timeout });
+    const result = await inAppLoginService.startLogin(providerSlug || id, {
+      timeout: typeof body.timeout === "number" ? body.timeout : undefined,
+    });
 
     // Persist credentials if extraction succeeded
     if (result.success && result.credentials) {
