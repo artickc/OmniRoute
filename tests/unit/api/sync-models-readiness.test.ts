@@ -248,3 +248,72 @@ test("sanity: without readiness gate, 17 callers retry independently (amplificat
     "without gate, callers retry independently, got " + modelFetchCalls + " (expected >17)"
   );
 });
+
+// ---------------------------------------------------------------------------
+// A failed readiness probe is logged ONCE per process, not once per connection
+//
+// At VibeProxy boot ~33 connections sync at once; when the shared probe timed
+// out, every waiting caller printed its own "readiness probe failed" warning
+// (32+ stderr lines per launch, each surfaced as a Logs page entry). Later
+// callers reuse the cached failure and must fall back silently too.
+// ---------------------------------------------------------------------------
+test("failed readiness probe: one shared probe, one warning, every caller falls back", async () => {
+  __resetLoopbackReadinessForTests();
+  let probeCalls = 0;
+  let modelFetchCalls = 0;
+  const failingFetch = async (url) => {
+    if (String(url).includes("__readiness_probe__")) {
+      probeCalls++;
+    } else {
+      modelFetchCalls++;
+    }
+    throw new Error("TimeoutError: The operation was aborted due to timeout");
+  };
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+
+  try {
+    // Start the shared probe with a short window; the callers below join it
+    // instead of starting their own.
+    const gate = ensureLoopbackServerReady({ fetch: failingFetch, maxWaitMs: 40, pollMs: 5 });
+    gate.catch(() => {});
+
+    let inProcCalls = 0;
+    const inProcMock = async () => {
+      inProcCalls++;
+      return new Response(JSON.stringify({ models: [{ id: "in-proc-model" }] }), { status: 200 });
+    };
+    const syncOne = (i: number) =>
+      selfFetchWithRetry("http://127.0.0.1:20128/api/providers/conn-" + i + "/models", {
+        fetch: failingFetch,
+        connectionId: "vibeproxy-pc-" + i,
+        backoffMs: 1,
+        inProcessFallback: inProcMock,
+      });
+
+    const results = await Promise.all(Array.from({ length: 33 }, (_, i) => syncOne(i)));
+    assert.equal(inProcCalls, 33, "every caller should use the in-process fallback");
+    assert.ok(results.every((res) => res.ok));
+    assert.equal(modelFetchCalls, 0, "no per-connection loopback fetch after a failed probe");
+
+    const probeCallsAfterBurst = probeCalls;
+    // A later sync (e.g. a manual "sync models") reuses the cached failure.
+    await syncOne(99);
+    assert.equal(inProcCalls, 34);
+    assert.equal(probeCalls, probeCallsAfterBurst, "cached failure must not re-probe");
+
+    const readinessWarnings = warnings.filter((w) => w.includes("readiness probe failed"));
+    assert.equal(
+      readinessWarnings.length,
+      1,
+      "expected exactly one readiness warning, got " + readinessWarnings.length
+    );
+  } finally {
+    console.warn = originalWarn;
+    __resetLoopbackReadinessForTests();
+  }
+});

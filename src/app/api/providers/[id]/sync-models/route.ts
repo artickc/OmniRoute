@@ -171,7 +171,8 @@ function getModelSyncChannelLabel(connection: unknown) {
 // await the same promise; the underlying HTTP probe runs exactly once per
 // process. Resolves on first HTTP response (any status — even 4xx confirms the
 // server is up); rejects only if maxWaitMs elapses with consistent network
-// errors.
+// errors. The outcome (including a failure) is cached for the process, and a
+// failure is logged once here rather than by each waiting connection.
 let __loopbackReadyPromise: Promise<void> | null = null;
 
 export type EnsureReadyOptions = {
@@ -207,7 +208,11 @@ export async function ensureLoopbackServerReady(opts: EnsureReadyOptions = {}): 
       }
       await new Promise((r) => setTimeout(r, pollMs));
     }
-    throw new Error(`loopback server not ready within ${maxWaitMs}ms: ${String(lastErr)}`);
+    const err = new Error(`loopback server not ready within ${maxWaitMs}ms: ${String(lastErr)}`);
+    console.warn(
+      `[ModelSync] Loopback server readiness probe failed; model sync will use the in-process route for this process: ${String(err)}`
+    );
+    throw err;
   })();
   return __loopbackReadyPromise;
 }
@@ -280,11 +285,10 @@ export async function selfFetchWithRetry(
   if (opts.skipReadinessGate !== true) {
     try {
       await ensureLoopbackServerReady({ fetch: f });
-    } catch (err) {
+    } catch {
       // Readiness probe timed out — fall straight through to in-process fallback.
-      console.warn(
-        `[ModelSync] Loopback server readiness probe failed; falling back to in-process route immediately (${connLabel}): ${String(err)}`
-      );
+      // The shared probe already logged the failure once; logging it here too
+      // would repeat it for every connection in the sync cycle.
       if (opts.inProcessFallback) {
         return opts.inProcessFallback();
       }
