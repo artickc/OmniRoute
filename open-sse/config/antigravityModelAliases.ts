@@ -289,6 +289,29 @@ export const ANTIGRAVITY_MODEL_ALIASES = Object.freeze({
   "gemini-claude-opus-4-5-thinking": "claude-opus-4-6-thinking",
 });
 
+const ANTIGRAVITY_RETIRED_MODEL_IDS = new Set<string>([
+  "gemini-3-flash-agent",
+  "gemini-3.5-flash-low",
+  "gemini-3.5-flash-extra-low",
+  "gemini-3.7-flash-high",
+  "gemini-3.7-flash-medium",
+  "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high",
+  "gemini-3.6-flash-medium",
+  "gemini-3.6-flash-low",
+]);
+
+/**
+ * Retired tiers the live :fetchAvailableModels catalog still lists but the backend no
+ * longer serves (verified 2026-10-16: the 3.5 Flash tiers reply "Gemini 3.5 Flash is no
+ * longer available", every 3.6 / 3.7 Flash id answers 404; Gemini 3.8 Flash replaces
+ * them). They are left out of the per-account discovered catalogs that drive model
+ * lists and routing; requests are not rewritten to another model.
+ */
+export function isRetiredAntigravityModelId(modelId: string): boolean {
+  return ANTIGRAVITY_RETIRED_MODEL_IDS.has(modelId);
+}
+
 type AntigravityModelAliasMap = Record<string, string>;
 
 /**

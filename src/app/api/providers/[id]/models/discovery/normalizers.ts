@@ -9,6 +9,7 @@ import { summarizeUpstreamBodyForLog } from "@omniroute/open-sse/utils/error.ts"
 import { resolveAntigravityClientVersion } from "@omniroute/open-sse/services/antigravityClientProfile.ts";
 import {
   getClientVisibleAntigravityModelName,
+  isRetiredAntigravityModelId,
   isUserCallableAntigravityModelId,
   toClientAntigravityModelId,
 } from "@omniroute/open-sse/config/antigravityModelAliases.ts";
@@ -77,9 +78,12 @@ export function filterUserCallableAntigravityModels(
   models: AntigravityDiscoveryModel[],
   provider: "antigravity" | "agy" = "antigravity"
 ) {
+  // Retired tiers can still appear in :fetchAvailableModels; they are reachable only
+  // through their alias, so they never enter an account's discovered catalog.
   return models.filter(
     (model) =>
       model.isInternal !== true &&
+      !isRetiredAntigravityModelId(model.id) &&
       (provider === "agy"
         ? isDiscoverableAgyModelId(model.id)
         : isUserCallableAntigravityModelId(model.id))
