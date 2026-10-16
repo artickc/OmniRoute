@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { Agent, buildConnector, fetch as undiciFetch, type Dispatcher } from "undici";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { getRuntimePorts } from "@/lib/runtime/ports";
+import { getUpstreamTimeoutConfig } from "@/shared/utils/runtimeTimeouts";
 
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MODEL_SYNC_SETTING_KEY = "model_sync_last_run";
@@ -64,23 +65,71 @@ export function createPinnedModelSyncTlsConnector(
     );
 }
 
+/**
+ * Dispatcher for the server's requests to itself, kept apart from the capped
+ * direct-egress pool behind the patched `globalThis.fetch`
+ * (open-sse/utils/proxyDispatcher.ts). Internal requests nest: each sync-models
+ * POST waits inside the route on further self-fetches (the readiness probe, then
+ * /models). Sharing a capped pool let the ~33 boot-time POSTs hold every socket
+ * while the probe they were waiting on queued behind them until it timed out, so
+ * the agent has no connection cap. Loopback sockets are cheap.
+ */
+export function createModelSyncLoopbackDispatcher(connect?: buildConnector.connector): Dispatcher {
+  const timeouts = getUpstreamTimeoutConfig();
+  return new Agent({
+    ...(connect ? { connect } : {}),
+    connections: null,
+    pipelining: 0,
+    headersTimeout: timeouts.fetchHeadersTimeoutMs,
+    bodyTimeout: timeouts.fetchBodyTimeoutMs,
+  });
+}
+
+let loopbackModelSyncDispatcher: Dispatcher | null = null;
 let pinnedModelSyncTlsDispatcher: Dispatcher | null = null;
+
+function getLoopbackModelSyncDispatcher(): Dispatcher {
+  if (!loopbackModelSyncDispatcher) {
+    loopbackModelSyncDispatcher = createModelSyncLoopbackDispatcher();
+  }
+  return loopbackModelSyncDispatcher;
+}
 
 function getPinnedModelSyncTlsDispatcher(): Dispatcher {
   if (!pinnedModelSyncTlsDispatcher) {
-    pinnedModelSyncTlsDispatcher = new Agent({
-      connect: createPinnedModelSyncTlsConnector(),
-      connections: 8,
-      pipelining: 0,
-    });
+    pinnedModelSyncTlsDispatcher = createModelSyncLoopbackDispatcher(
+      createPinnedModelSyncTlsConnector()
+    );
   }
   return pinnedModelSyncTlsDispatcher;
 }
 
-const fetchWithDispatcher = undiciFetch as unknown as (
+type FetchWithDispatcher = (
   input: RequestInfo | URL,
-  init: RequestInit & { dispatcher: Dispatcher }
+  init: RequestInit & { dispatcher?: Dispatcher }
 ) => Promise<Response>;
+
+const fetchWithDispatcher = undiciFetch as unknown as FetchWithDispatcher;
+
+// Key under which open-sse/utils/proxyFetch.ts records its globalThis.fetch patch.
+const PROXY_FETCH_STATE_KEY = Symbol.for("omniroute.proxyFetch.state");
+
+/**
+ * The http self-fetch goes through `globalThis.fetch` (tests stub it there). Once
+ * the proxyFetch patch is installed, which the server does at boot, that fetch
+ * hands a caller-supplied dispatcher to the undici library fetch. Node's own fetch
+ * rejects a dispatcher from the undici package, so without the patch the request
+ * goes out plain, on Node's default dispatcher, which has no connection cap either.
+ */
+function fetchLoopbackHttp(url: string, init: RequestInit): Promise<Response> {
+  const current = globalThis.fetch as unknown as FetchWithDispatcher;
+  const patchState = (globalThis as Record<symbol, unknown>)[PROXY_FETCH_STATE_KEY] as
+    { isPatched?: boolean; originalFetch?: unknown } | undefined;
+  if (patchState?.isPatched && current !== patchState.originalFetch) {
+    return current(url, { ...init, dispatcher: getLoopbackModelSyncDispatcher() });
+  }
+  return current(url, init);
+}
 
 export const fetchModelSyncInternal: typeof fetch = async (input, init = {}) => {
   const inputUrl =
@@ -108,7 +157,7 @@ export const fetchModelSyncInternal: typeof fetch = async (input, init = {}) => 
       dispatcher: getPinnedModelSyncTlsDispatcher(),
     });
   }
-  return globalThis.fetch(inputUrl.href, requestInit);
+  return fetchLoopbackHttp(inputUrl.href, requestInit);
 };
 
 const globalState = globalThis as typeof globalThis & {
