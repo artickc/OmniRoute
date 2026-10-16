@@ -133,3 +133,26 @@ test("never generates variants-of-variants when the list already contains effort
     .filter((id) => /-(low|medium|high|xhigh)-(low|medium|high|xhigh)$/.test(id));
   assert.deepEqual(doubleSuffixed, []);
 });
+
+// ── routable providers only ──────────────────────────────────────────────────
+
+test("skips Claude models served by providers that cannot route the -{effort} suffix", () => {
+  // Antigravity serves Claude thinking models, but chatCore only strips the suffix for
+  // claude / Claude-Code-compatible providers, so `-high` reached Google verbatim and 404'd.
+  const input = [
+    mk("antigravity/claude-opus-4-6-thinking"),
+    mk("antigravity/claude-sonnet-4-6"),
+    mk("github/claude-opus-4-8"),
+  ];
+  const out = appendClaudeEffortVariants(input);
+  assert.equal(out, input);
+});
+
+test("keeps variants for claude, its cc alias and Claude-Code-compatible nodes", () => {
+  assert.equal(isClaudeEffortRoutableProvider("claude"), true);
+  assert.equal(isClaudeEffortRoutableProvider("cc"), true);
+  assert.equal(isClaudeEffortRoutableProvider("anthropic-compatible-cc-abc123"), true);
+  assert.equal(isClaudeEffortRoutableProvider("antigravity"), false);
+  assert.equal(isClaudeEffortRoutableProvider("agy"), false);
+  assert.equal(isClaudeEffortRoutableProvider(""), false);
+});

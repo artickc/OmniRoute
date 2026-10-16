@@ -30,6 +30,8 @@
  */
 import { getModelSpec } from "@/shared/constants/modelSpecs";
 import { supportsXHighEffort } from "../config/providerModels.ts";
+import { usesCcWireImage } from "../services/ccWireImageBuiltins.ts";
+import { CLAUDE_CODE_COMPATIBLE_PREFIX } from "../services/claudeCodeCompatible.ts";
 
 /** Base reasoning-effort levels advertised for every effort-capable Claude model. */
 export const CLAUDE_EFFORT_VARIANT_LEVELS = ["low", "medium", "high"] as const;
@@ -50,6 +52,23 @@ interface CatalogModelEntry {
   name?: unknown;
   root?: unknown;
   [key: string]: unknown;
+}
+
+/**
+ * Providers whose gateway strips a `-{effort}` suffix back to the base model
+ * (`applyClaudeEffortVariant` in chatCore). Advertising a variant anywhere else lists an
+ * id the upstream does not know: `antigravity/claude-opus-4-6-thinking-high` was sent
+ * verbatim to Google and returned 404, then locked the model for every account.
+ */
+const CLAUDE_EFFORT_ROUTABLE_PROVIDERS = new Set(["claude", "cc"]);
+
+export function isClaudeEffortRoutableProvider(providerId: string): boolean {
+  if (!providerId) return false;
+  return (
+    CLAUDE_EFFORT_ROUTABLE_PROVIDERS.has(providerId) ||
+    providerId.startsWith(CLAUDE_CODE_COMPATIBLE_PREFIX) ||
+    usesCcWireImage(providerId)
+  );
 }
 
 /** Strip a `<provider>/` prefix to get the bare model name for spec lookup. */
@@ -141,6 +160,7 @@ export function appendClaudeEffortVariants<T extends CatalogModelEntry>(
     const qualifiedId = aliasToCanonical ? normalizeProviderPrefix(rawId, aliasToCanonical) : rawId;
     const slash = qualifiedId.indexOf("/");
     const providerId = slash >= 0 ? qualifiedId.slice(0, slash) : "";
+    if (!isClaudeEffortRoutableProvider(providerId)) continue;
     const bareName = bareModelName(qualifiedId);
     for (const level of claudeEffortLevelsFor(providerId, bareName)) {
       const variantId = `${qualifiedId}-${level}`;
